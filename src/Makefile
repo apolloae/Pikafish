@@ -1,12 +1,12 @@
-# Pikafish, a UCI chess playing engine derived from Stockfish
-# Copyright (C) 2004-2023 The Pikafish developers (see AUTHORS file)
+# Stockfish, a UCI chess playing engine derived from Glaurung 2.1
+# Copyright (C) 2004-2026 The Stockfish developers (see AUTHORS file)
 #
-# Pikafish is free software: you can redistribute it and/or modify
+# Stockfish is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# Pikafish is distributed in the hope that it will be useful,
+# Stockfish is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
@@ -135,14 +135,14 @@ ifeq ($(ARCH), $(filter $(ARCH), \
                  x86-64-universal x86-64-avx512icl x86-64-vnni512 x86-64-avx512 x86-64-avxvnni \
                  x86-64-bmi2 x86-64-avx2 x86-64-sse41-popcnt x86-64-modern x86-64-ssse3 x86-64-sse3-popcnt \
                  x86-64 x86-32-sse41-popcnt x86-32-sse2 x86-32 ppc-64 ppc-64-altivec ppc-64-vsx ppc-32 e2k \
-                 armv7 armv7-neon armv8 armv8-dotprod apple-silicon general-64 general-32 riscv64 \
+                 armv7 armv7-neon armv8 armv8-dotprod arm64-universal apple-silicon general-64 general-32 riscv64 \
                  loongarch64 loongarch64-lsx loongarch64-lasx))
    SUPPORTED_ARCH=true
 else
    SUPPORTED_ARCH=false
 endif
 
-ifeq ($(ARCH), x86-64-universal)
+ifneq (,$(findstring universal,$(ARCH)))
    UNIVERSAL_BUILD=true
 else
    UNIVERSAL_BUILD=false
@@ -359,6 +359,14 @@ ifeq ($(ARCH),armv8-dotprod)
 	arm_version = 8
 endif
 
+ifeq ($(ARCH),arm64-universal)
+	arch = armv8
+	prefetch = yes
+	popcnt = yes
+	neon = yes
+	arm_version = 8
+endif
+
 ifeq ($(ARCH),apple-silicon)
 	arch = arm64
 	prefetch = yes
@@ -493,14 +501,14 @@ ifeq ($(COMP),mingw)
 			CXX=i686-w64-mingw32-c++-posix
 		endif
 	endif
-	CXXFLAGS += -pedantic -Wextra -Wshadow -Wmissing-declarations
+	CXXFLAGS += -pedantic -Wextra -Wshadow -Wmissing-declarations -fconstexpr-ops-limit=500000000
 endif
 
 ifeq ($(COMP),icx)
 	comp=icx
 	CXX=icpx
 	CXXFLAGS += --intel -pedantic -Wextra -Wshadow -Wmissing-prototypes \
-		-Wconditional-uninitialized -Wabi -Wdeprecated
+		-Wconditional-uninitialized -Wabi -Wdeprecated -fconstexpr-steps=500000000
 endif
 
 ifeq ($(COMP),clang)
@@ -511,7 +519,7 @@ ifeq ($(COMP),clang)
 	endif
 
 	CXXFLAGS += -pedantic -Wextra -Wshadow -Wmissing-prototypes \
-	            -Wconditional-uninitialized -flax-vector-conversions=none
+	            -Wconditional-uninitialized -flax-vector-conversions=none -fconstexpr-steps=500000000
 
 	ifeq ($(filter $(KERNEL),Darwin OpenBSD FreeBSD),)
 	ifeq ($(target_windows),)
@@ -538,12 +546,12 @@ ifeq ($(COMP),clang)
 endif
 
 ifeq ($(KERNEL),Darwin)
-	CXXFLAGS += -mmacosx-version-min=10.15
-	LDFLAGS += -mmacosx-version-min=10.15
+	mac_target_flags := -mmacosx-version-min=10.15
 	ifneq ($(arch),any)
-		CXXFLAGS += -arch $(arch)
-		LDFLAGS += -arch $(arch)
+		mac_target_flags += -arch $(arch)
 	endif
+	CXXFLAGS += $(mac_target_flags)
+	LDFLAGS += $(mac_target_flags)
 	XCRUN = xcrun
 endif
 
@@ -576,6 +584,7 @@ ifeq ($(COMP),ndk)
 			STRIP=llvm-strip
 		endif
 	endif
+	OBJCOPY=llvm-objcopy
 	LDFLAGS += -static-libstdc++
 endif
 
@@ -618,8 +627,9 @@ ifeq ($(COMP),gcc)
 	ifneq ($(gccisclang),)
 		profile_make = clang-profile-make
 		profile_use = clang-profile-use
+		CXXFLAGS += -fconstexpr-steps=500000000
 	else
-		CXXFLAGS += -Wstack-usage=128000 -fno-ipa-cp-clone
+		CXXFLAGS += -Wstack-usage=128000 -fno-ipa-cp-clone -fconstexpr-ops-limit=500000000
 	endif
 endif
 
@@ -810,12 +820,14 @@ ifeq ($(dotprod),yes)
 endif
 
 ifeq ($(lasx),yes)
+	CXXFLAGS += -DUSE_LASX
 	ifeq ($(comp),$(filter $(comp),gcc clang mingw icx))
 		CXXFLAGS += -mlasx
 	endif
 endif
 
 ifeq ($(lsx),yes)
+	CXXFLAGS += -DUSE_LSX
 	ifeq ($(comp),$(filter $(comp),gcc clang mingw icx))
 		CXXFLAGS += -mlsx
 	endif
@@ -932,6 +944,7 @@ help:
 	echo "help                    > Display architecture details" && \
 	echo "profile-build           > standard build with profile-guided optimization" && \
 	echo "build                   > skip profile-guided optimization" && \
+	echo "macos-lipo              > macOS x86-64 + Apple silicon universal binary" && \
 	echo "net                     > Download the default nnue nets" && \
 	echo "strip                   > Strip executable" && \
 	echo "install                 > Install executable" && \
@@ -961,6 +974,7 @@ help:
 	echo "ppc-32                  > PPC 32-bit" && \
 	echo "armv7                   > ARMv7 32-bit" && \
 	echo "armv7-neon              > ARMv7 32-bit with popcnt and neon" && \
+	echo "arm64-universal         > ARMv8 64-bit with automatic runtime selection of the best architecture" && \
 	echo "armv8                   > ARMv8 64-bit with popcnt and neon" && \
 	echo "armv8-dotprod           > ARMv8 64-bit with popcnt, neon and dot product support" && \
 	echo "e2k                     > Elbrus 2000" && \
@@ -999,7 +1013,7 @@ ifneq ($(SUPPORTED_ARCH), true)
 endif
 
 
-.PHONY: help analyze build profile-build strip install clean net \
+.PHONY: help analyze build profile-build macos-lipo strip install clean net \
 	objclean profileclean config-sanity \
 	icx-profile-use icx-profile-make \
 	gcc-profile-use gcc-profile-make \
@@ -1030,6 +1044,46 @@ profile-build: net config-sanity objclean profileclean
 	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) profileclean
 endif
 
+macos-lipo:
+	@echo ""
+	@echo "Step 1/4. Building x86-64 slice ..."
+	CXXFLAGS="-arch x86_64" $(MAKE) build ARCH=x86-64-universal COMP=$(COMP)
+	mv $(EXE) $(EXE)-x86_64
+	@echo ""
+	@echo "Step 2/4. Building Apple silicon slice ..."
+	$(MAKE) build ARCH=apple-silicon COMP=$(COMP)
+	mv $(EXE) $(EXE)-arm64
+	@echo ""
+	@echo "Step 3/4. Combining slices ..."
+	lipo -create $(EXE)-x86_64 $(EXE)-arm64 -output $(EXE)
+	@echo ""
+	@echo "Step 4/4. Deleting slices ..."
+	@rm -f $(EXE)-x86_64 $(EXE)-arm64
+	@echo "Universal macOS binary built: $(EXE)"
+
+ifeq ($(KERNEL),Darwin)
+# Apple uses ld64 which doesn't have --save-temps
+  LTO_OBJ_SUFFIX := .lto.o
+  SAVE_TEMPS := -Wl,-object_path_lto,$(basename $(EXE)).lto.o
+else ifeq ($(comp), clang)
+  LTO_OBJ_SUFFIX := .lto.o
+  ifeq ($(target_windows),yes)
+    SAVE_TEMPS := -Wl,--lto-emit-asm  # ld.lld doesn't have a save temps functionality
+    use_lto_emit_asm := yes
+  else
+    SAVE_TEMPS := -Wl,--save-temps
+  endif
+else
+  LTO_OBJ_SUFFIX := .ltrans0.ltrans.o
+  SAVE_TEMPS     := -save-temps
+endif
+
+ifeq ($(arch),armv8)
+  ASM_FLAGS := -mcpu=neoverse-v2
+endif
+
+MODNAME := $(subst -,_,$(notdir $(CURDIR)))
+
 universal-object-pgo: objclean profileclean universalclean
 	@echo ""
 	@echo "Step 1/4. Building instrumented executable ..."
@@ -1043,12 +1097,25 @@ universal-object-pgo: objclean profileclean universalclean
 	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) objclean
 	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) $(profile_use)
 	@echo ""
+ifeq ($(use_lto_emit_asm),yes)
+	@echo "Step 4/4. Renaming ctors and extracting LTO-optimized relocatable object ..."
+	awk -v MODNAME=$(MODNAME) -f ../../universal/rewrite_asm_sections.awk *.lto.s > renamed.s
+# -mcpu=neoverse-v2 (or another CPU supporting dotprod) is required for clang
+# to not complain when assembling
+	$(CXX) -c renamed.s -o pikafish.o $(ASM_FLAGS)
+else
 	@echo "Step 4/4. Extracting LTO-optimized relocatable object ..."
-	llvm-link -o pikafish.o $(notdir $(patsubst %.cpp,%.o,$(filter %.cpp,$(SRCS))))
+	cp "$(basename $(EXE))$(LTO_OBJ_SUFFIX)" pikafish.o
+endif
 
 universal-object-nopgo: objclean universalclean
-	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) all
-	llvm-link -o pikafish.o $(notdir $(patsubst %.cpp,%.o,$(filter %.cpp,$(SRCS))))
+	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) ENV_LDFLAGS='$(SAVE_TEMPS)' all
+ifeq ($(use_lto_emit_asm),yes)
+	awk -v MODNAME=$(MODNAME) -f ../../universal/rewrite_asm_sections.awk *.lto.s > renamed.s
+	$(CXX) -c renamed.s -o pikafish.o $(ASM_FLAGS)
+else
+	cp "$(basename $(EXE))$(LTO_OBJ_SUFFIX)" pikafish.o
+endif
 
 strip:
 	$(STRIP) $(EXE)
@@ -1229,44 +1296,80 @@ endif
 # Usage:
 #   make -j ARCH=x86-64-universal build          # non-PGO
 #   make -j ARCH=x86-64-universal profile-build  # PGO (use RUN_PREFIX for intel SDE)
+#   make -j ARCH=arm64-universal build
 
 TEMP_DIR             := $(CURDIR)/temp_builds
 UNIVERSAL_EXE        := $(CURDIR)/$(EXE)
 
 ifeq ($(UNIVERSAL_BUILD),true)
 
-UNIVERSAL_ARCHES := x86-64 x86-64-sse41-popcnt x86-64-avx2 x86-64-bmi2 \
-                    x86-64-avxvnni x86-64-avx512 x86-64-vnni512 x86-64-avx512icl
-
 UNIVERSAL_SRC_DIR    := $(CURDIR)/universal
-UNIVERSAL_ENTRY_OBJ  := $(TEMP_DIR)/entry_x86.o
 NET_SENTINEL         := $(TEMP_DIR)/.net-done
+
+ifeq ($(arch),x86_64)
+  UNIVERSAL_ARCHES := x86-64 x86-64-sse41-popcnt x86-64-avx2 x86-64-bmi2 \
+                      x86-64-avxvnni x86-64-avx512 x86-64-vnni512 x86-64-avx512icl
+  UNIVERSAL_ENTRY_OBJ  := $(TEMP_DIR)/entry_x86.o
+  UNIVERSAL_ENTRY_SRC  := $(UNIVERSAL_SRC_DIR)/entry_x86.cpp
+  BASELINE_ARCH := x86-64
+else
+  UNIVERSAL_ARCHES := armv8 armv8-dotprod
+  UNIVERSAL_ENTRY_OBJ  := $(TEMP_DIR)/entry_arm64.o
+  UNIVERSAL_ENTRY_SRC  := $(UNIVERSAL_SRC_DIR)/entry_arm64.cpp
+  BASELINE_ARCH := armv8
+endif
 
 # Top-level tracked items in src/ (directories and files)
 TRACKED_TOP := $(sort $(foreach f,$(SRCS) $(HEADERS) Makefile,$(firstword $(subst /, ,$(f)))))
 
-# Baseline x86-64 must come first in the final link (Windows --allow-multiple-definition
+# Baseline build must come first in the final link (Windows --allow-multiple-definition
 # uses the first copy of inline duplicates)
-ARCH_OBJS := $(TEMP_DIR)/x86-64/pikafish.o \
-             $(patsubst %,$(TEMP_DIR)/%/pikafish.o,$(filter-out x86-64,$(UNIVERSAL_ARCHES)))
+ARCH_OBJS := $(TEMP_DIR)/$(BASELINE_ARCH)/pikafish.o \
+             $(patsubst %,$(TEMP_DIR)/%/pikafish.o,$(filter-out $(BASELINE_ARCH),$(UNIVERSAL_ARCHES)))
 
-UNIVERSAL_COMMON_OBJ := $(patsubst %.S,$(TEMP_DIR)/x86-64/%.o,$(notdir $(filter %.S,$(SRCS))))
+UNIVERSAL_COMMON_OBJ := $(patsubst %,$(TEMP_DIR)/$(BASELINE_ARCH)/%,$(notdir $(patsubst %.S,%.o,$(filter %.S,$(SRCS)))))
+
 UNIVERSAL_FINAL_FLAGS := -fno-exceptions -Os
-ifeq ($(KERNEL),Linux)
+
+ifeq ($(KERNEL),Darwin)
+  UNIVERSAL_FINAL_FLAGS += $(mac_target_flags)
+else ifeq ($(KERNEL),Linux)
+  ifeq ($(COMP),ndk)
+    UNIVERSAL_FINAL_FLAGS += -static
+  else
     UNIVERSAL_FINAL_FLAGS += -fuse-ld=lld -nostdlib++ -stdlib=libc++ -rtlib=compiler-rt -unwindlib=libunwind -Wl,-Bstatic -lc++ -lc++abi -lunwind -Wl,-Bdynamic
-    UNIVERSAL_LLC_FLAGS := -relocation-model=pic
-else
-    UNIVERSAL_FINAL_FLAGS += -static -lpthread
+  endif
+else    # windows
+  UNIVERSAL_FINAL_FLAGS += -Wl,--allow-multiple-definition -static
+  ifeq ($(COMP),clang)
+    UNIVERSAL_FINAL_FLAGS += -lpthread
+  endif
 endif
 
 # $(call arch-namespace,x86-64-avx2) => Stockfish_x86_64_avx2
 arch-suffix     = $(subst -,_,$(1))
 arch-namespace  = Stockfish_$(call arch-suffix,$(1))
 # Itanium ABI mangled name for Stockfish_<suffix>::main(int, char**)
-arch-mangled    = _ZN$(shell printf %s '$(call arch-namespace,$(1))' | wc -c)$(call arch-namespace,$(1))4mainEiPPc
-arch-cxxflags   = -DStockfish=$(call arch-namespace,$(1)) -DUNIVERSAL_BINARY
+arch-mangled    = _ZN$(shell printf %s '$(call arch-namespace,$(1))' | wc -c | tr -d ' ')$(call arch-namespace,$(1))4mainEiPPc
+# Mach-O initializer section name: strip "x86-64" or "x86-64-" and prefix with "_i_"
+# (Mach-O section names are restricted to <=16 chars, hence this naming scheme)
+arch-mac-section = _i_$(subst -,_,$(patsubst x86-64,,$(patsubst x86-64-%,%,$(1))))
+
+ifeq ($(KERNEL),Darwin)
+  arch-defmain = -Wl,-alias,_$(call arch-mangled,$(1)),_main
+# lld-link, used on Windows+clang, doesn't accept --defsym, so
+# we define main directly in main.cpp instead and delete it later.
+else ifeq ($(target_windows)+$(COMP),yes+clang)
+  arch-defmain = -DUNIVERSAL_NEEDS_MAIN_SHIM
+else
+  arch-defmain = -Wl,--defsym=main=$(call arch-mangled,$(1))
+endif
+
+arch-cxxflags   = -DStockfish=$(call arch-namespace,$(1)) -DUNIVERSAL_BINARY $(call arch-defmain,$(1)) \
+                  -Wno-unused-command-line-argument
 
 UOBJ_TGT ?= universal-object-pgo
+OBJCOPY  ?= objcopy
 
 .PHONY: build profile-build universal-clean
 build:         UOBJ_TGT := universal-object-nopgo
@@ -1282,8 +1385,8 @@ $(NET_SENTINEL): | $(TEMP_DIR)
 	@cd $(CURDIR) && $(SHELL) ../scripts/net.sh
 	@touch $@
 
-$(UNIVERSAL_ENTRY_OBJ): $(UNIVERSAL_SRC_DIR)/entry_x86.cpp | $(TEMP_DIR)
-	$(CXX) -O2 -c $< -o $@
+$(UNIVERSAL_ENTRY_OBJ): $(UNIVERSAL_ENTRY_SRC) | $(TEMP_DIR)
+	$(CXX) -O2 -std=c++20 $(mac_target_flags) -c $< -o $@
 
 # Symlink tracked top-level items from src/ into temp_builds/<arch>/.
 $(TEMP_DIR)/%/.setup: | $(TEMP_DIR)
@@ -1298,44 +1401,26 @@ $(TEMP_DIR)/%/.setup: | $(TEMP_DIR)
 $(TEMP_DIR)/%/pikafish.o: $(TEMP_DIR)/%/.setup $(NET_SENTINEL)
 	+ENV_CXXFLAGS='$(ENV_CXXFLAGS) $(call arch-cxxflags,$*)' \
 	    $(MAKE) -C $(TEMP_DIR)/$* $(UOBJ_TGT) \
-	        ARCH=$* CXX=$(CXX)
-	llvm-dis -o $@.ll $@
-	@awk -v section='$(call arch-suffix,$*)_init' \
-	      -v start='__start_$(call arch-suffix,$*)_init' \
-	      -v stop='__stop_$(call arch-suffix,$*)_init' '\
-		BEGIN { ctor_count = 0 } \
-		/^@llvm\.global_ctors = appending global / { \
-			line = $$0; \
-			while (match(line, /\{ i32 [0-9]+, ptr @[^,]+, ptr [^}]+\}/)) { \
-				entry = substr(line, RSTART, RLENGTH); \
-				name = entry; \
-				sub(/^\{ i32 [0-9]+, ptr @/, "", name); \
-				sub(/, ptr [^}]+\}$$/, "", name); \
-				ctors[++ctor_count] = name; \
-				line = substr(line, RSTART + RLENGTH); \
-			} \
-			next; \
-		} \
-		{ print } \
-		END { \
-			print ""; \
-			if (ctor_count == 0) { \
-				print "define internal void @__universal_noop_ctor() {"; \
-				print "  ret void"; \
-				print "}"; \
-				ctors[++ctor_count] = "__universal_noop_ctor"; \
-				print ""; \
-			} \
-			printf "@%s = dso_local global [%d x ptr] [", start, ctor_count; \
-			for (i = 1; i <= ctor_count; ++i) \
-				printf "%s ptr @%s", (i == 1 ? "" : ", "), ctors[i]; \
-			printf "], section \"%s\", align 8\n", section; \
-			printf "@%s = dso_local alias ptr, ptr getelementptr inbounds ([%d x ptr], ptr @%s, i64 1, i64 0)\n", stop, ctor_count, start; \
-		}' $@.ll > $@.rewritten.ll
-	opt -inline-threshold=500 -passes='internalize,lto<O3>' \
-	    -internalize-public-api-list='$(call arch-mangled,$*),__start_$(call arch-suffix,$*)_init,__stop_$(call arch-suffix,$*)_init' \
-	    -o $@.opt.bc $@.rewritten.ll
-	llc -O3 $(UNIVERSAL_LLC_FLAGS) -filetype=obj -o $@ $@.opt.bc
+	        ARCH=$* CXX=$(CXX) COMP=$(COMP)
+ifeq ($(KERNEL),Darwin)
+# Rename the initializer section
+	ld -r -rename_section __DATA __mod_init_func __DATA $(call arch-mac-section,$*) $@ -o $@.tmp
+	mv $@.tmp $@
+else
+# Drop COMDAT groups; clang LTO leaves them around internalized LOCAL
+# template instantiations which causes problems at the final link
+	$(OBJCOPY) -R .group $@
+ifeq ($(use_lto_emit_asm),yes)
+# Delete per-arch main shim
+	$(OBJCOPY) -N main $@
+else
+# Rename .init_array (Linux) or .ctors (Windows) so we can manually invoke them
+	$(OBJCOPY) --rename-section .init_array=$(call arch-suffix,$*)_init $@
+	$(OBJCOPY) --rename-section .ctors=$(call arch-suffix,$*)_init $@
+# Make the array inert
+	$(OBJCOPY) --set-section-flags $(call arch-suffix,$*)_init=alloc,data $@
+endif
+endif
 
 $(UNIVERSAL_EXE): $(UNIVERSAL_ENTRY_OBJ) $(ARCH_OBJS)
 	$(CXX) -o $@ $(UNIVERSAL_ENTRY_OBJ) $(ARCH_OBJS) $(UNIVERSAL_COMMON_OBJ) $(UNIVERSAL_FINAL_FLAGS)

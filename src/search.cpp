@@ -77,11 +77,13 @@ int correction_value(const Worker& w, const Position& pos, const Stack* const ss
     const int   wnpcv  = shared.nonpawn_correction_entry<WHITE>(pos)[us].nonPawnWhite;
     const int   bnpcv  = shared.nonpawn_correction_entry<BLACK>(pos)[us].nonPawnBlack;
     const int   cntcv =
-      m.is_ok() ? (*(ss - 2)->continuationCorrectionHistory)[pos.piece_on(m.to_sq())][m.to_sq()]
-                    + (*(ss - 4)->continuationCorrectionHistory)[pos.piece_on(m.to_sq())][m.to_sq()]
-                : 8;
+      m.is_ok()
+        ? 8982
+            * ((*(ss - 2)->continuationCorrectionHistory)[pos.piece_on(m.to_sq())][m.to_sq()]
+               + (*(ss - 4)->continuationCorrectionHistory)[pos.piece_on(m.to_sq())][m.to_sq()])
+        : 71856;
 
-    return 4547 * pcv + 3804 * micv + 8213 * (wnpcv + bnpcv) + 8982 * cntcv;
+    return 4547 * pcv + 3804 * micv + 8213 * (wnpcv + bnpcv) + cntcv;
 }
 
 // Add correctionHistory value to raw staticEval and guarantee evaluation
@@ -132,9 +134,9 @@ void update_all_stats(const Position& pos,
                       Move            ttMove);
 
 bool is_shuffling(Move move, Stack* const ss, const Position& pos) {
-    if (pos.capture(move) || pos.rule60_count() < 11)
+    if (pos.capture(move) || pos.rule60_count() < 10)
         return false;
-    if (pos.state()->pliesFromNull <= 6 || ss->ply < 19)
+    if (pos.state()->pliesFromNull < 6 || ss->ply < 20)
         return false;
     return move.from_sq() == (ss - 2)->currentMove.to_sq()
         && (ss - 2)->currentMove.from_sq() == (ss - 4)->currentMove.to_sq();
@@ -158,15 +160,15 @@ Search::Worker::Worker(SharedState&                    sharedState,
     options(sharedState.options),
     threads(sharedState.threads),
     tt(sharedState.tt),
-    networks(sharedState.networks),
-    refreshTable(networks[token]) {
+    network(sharedState.network),
+    refreshTable(network[token]) {
     clear();
 }
 
 void Search::Worker::ensure_network_replicated() {
     // Access once to force lazy initialization.
     // We do this because we want to avoid initialization during search.
-    (void) (networks[numaAccessToken]);
+    (void) (network[numaAccessToken]);
 }
 
 void Search::Worker::start_searching() {
@@ -254,8 +256,9 @@ bool Search::Worker::iterative_deepening() {
     Depth lastBestMoveDepth = 0;
 
     Value  alpha, beta;
-    Value  bestValue     = -VALUE_INFINITE;
-    Color  us            = rootPos.side_to_move();
+    Value  bestValue          = -VALUE_INFINITE;
+    Value  lastIterationScore = -VALUE_INFINITE;
+    Color  us                 = rootPos.side_to_move();
     double timeReduction = 1, totBestMoveChanges = 0;
     int    delta, iterIdx                        = 0;
 
@@ -297,7 +300,7 @@ bool Search::Worker::iterative_deepening() {
 
     for (Color c : {WHITE, BLACK})
         for (int i = 0; i < UINT_16_HISTORY_SIZE; i++)
-            mainHistory[c][i] = mainHistory[c][i] * 768 / 1024;
+            mainHistory[c][i] = (mainHistory[c][i] + 5) * 768 / 1024;
 
     // Iterative deepening loop until requested to stop or the target depth is reached
     while (rootDepth + 1 < MAX_PLY && !threads.stop
@@ -393,7 +396,7 @@ bool Search::Worker::iterative_deepening() {
                 else
                     break;
 
-                delta += delta / 3;
+                delta += 44 * delta / 128;
 
                 assert(alpha >= -VALUE_INFINITE && beta <= VALUE_INFINITE);
             }
@@ -411,8 +414,8 @@ bool Search::Worker::iterative_deepening() {
                    && rootMoves[pvIdx].previousScore < rootMoves[pvIdx - 1].score)
                     ? rootMoves[pvIdx].previousScore
                     : rootMoves[pvIdx - 1].score;
-                rootMoves[pvIdx].previousScore   = -VALUE_INFINITE;
-                rootMoves[pvIdx].scoreLowerbound = rootMoves[pvIdx].scoreUpperbound = false;
+                rootMoves[pvIdx].previousScore = -VALUE_INFINITE;
+                rootMoves[pvIdx].unset_bound_flags();
                 rootMoves[pvIdx].pv.resize(1);
             }
 
@@ -429,43 +432,54 @@ bool Search::Worker::iterative_deepening() {
                 break;
         }
 
+        const bool forgottenMate = lastIterationScore != -VALUE_INFINITE
+                                && is_decisive(lastIterationScore)
+                                && (std::abs(rootMoves[0].score) < std::abs(lastIterationScore)
+                                    || rootMoves[0].score_is_bound());
+
         if (!threads.stop)
         {
-            completedDepth = rootDepth;
-
             if (lastIterationPV.empty() || rootMoves[0].pv[0] != lastIterationPV[0])
                 lastBestMoveDepth = rootDepth;
 
-            lastIterationPV = rootMoves[0].pv;
+            // Do not replace (shorter) mate scores from a previous iteration.
+            if (!forgottenMate)
+            {
+                lastIterationPV    = rootMoves[0].pv;
+                lastIterationScore = rootMoves[0].score;
+            }
         }
 
-        // A mated-in/TB-loss score from an aborted search cannot be trusted: the loss
-        // could be delayed or refuted upon exploring the remaining root-moves.
+        const bool abortedLossSearch =
+          threads.stop && !pvIdx && rootMoves[0].score != -VALUE_INFINITE
+          && is_loss(rootMoves[0].score) && !rootMoves[0].score_is_bound();
+
+        // An exact mated-in/TB-loss score from an aborted search cannot be trusted: the
+        // loss could be delayed or refuted upon exploring the remaining root-moves.
         // Thus here we roll back to the score from the previous iteration.
-        else if (!pvIdx && rootMoves[0].score != -VALUE_INFINITE && is_loss(rootMoves[0].score))
+        // We do the same if a search has failed to recover a mate score that was found
+        // in a previous iteration.
+        if (abortedLossSearch || (rootMoves[0].score != -VALUE_INFINITE && forgottenMate))
         {
-            // Bring the last best move to the front for best thread selection.
             if (!lastIterationPV.empty())
             {
                 Utility::move_to_front(rootMoves, [&lastPV = std::as_const(lastIterationPV)](
                                                     const auto& rm) { return rm == lastPV[0]; });
                 rootMoves[0].pv    = lastIterationPV;
-                rootMoves[0].score = rootMoves[0].uciScore = rootMoves[0].previousScore;
+                rootMoves[0].score = rootMoves[0].uciScore = lastIterationScore;
+                rootMoves[0].unset_bound_flags();
 
                 if (mainThread)
-                    uciPvSent = true;
+                    uciPvSent = false;
             }
-            // For an aborted d1 search we label the loss score as inexact.
-            else if (!rootMoves[0].scoreLowerbound)
-                rootMoves[0].scoreUpperbound = true;
+            // For an aborted d1 search we label the loss score as a lower bound.
+            else if (abortedLossSearch)
+                rootMoves[0].scoreLowerbound = true;
         }
 
         // Have we found a "mate in x" after a completed iteration?
-        if (limits.mate && !threads.stop
-            && ((rootMoves[0].score >= VALUE_MATE_IN_MAX_PLY
-                 && VALUE_MATE - rootMoves[0].score <= 2 * limits.mate)
-                || (rootMoves[0].score <= VALUE_MATED_IN_MAX_PLY
-                    && VALUE_MATE + rootMoves[0].score <= 2 * limits.mate)))
+        if (limits.mate && !threads.stop && is_decisive(rootMoves[0].score)
+            && VALUE_MATE - std::abs(rootMoves[0].score) <= 2 * limits.mate)
             threads.stop = true;
 
         if (!mainThread)
@@ -484,23 +498,23 @@ bool Search::Worker::iterative_deepening() {
             uint64_t nodesEffort =
               rootMoves[0].effort * 100000 / std::max(uint64_t(1), uint64_t(nodes));
 
-            double fallingEval = (16.93 + 2.730 * (mainThread->bestPreviousAverageScore - bestValue)
-                                  + 0.81 * (mainThread->iterValue[iterIdx] - bestValue))
+            double fallingEval = (16.93 + 2.73 * (mainThread->bestPreviousAverageScore - bestValue)
+                                  + 0.8 * (mainThread->iterValue[iterIdx] - bestValue))
                                / 100.0;
             fallingEval        = std::clamp(fallingEval, 0.610, 1.860);
 
             // If the bestMove is stable over several iterations, reduce time accordingly
-            timeReduction = std::clamp(
-              interpolate(double(completedDepth - lastBestMoveDepth), 8.0, 17.0, 0.67, 1.44), 0.67,
-              1.44);
+            timeReduction =
+              std::clamp(interpolate(double(rootDepth - lastBestMoveDepth), 8.0, 17.0, 0.67, 1.44),
+                         0.67, 1.44);
 
-            double reduction = (2.1 + mainThread->previousTimeReduction) / (2.480 * timeReduction);
+            double reduction = (2.10 + mainThread->previousTimeReduction) / (2.480 * timeReduction);
 
-            double bestMoveInstability = 0.960 + 1.630 * totBestMoveChanges / threads.size();
+            double bestMoveInstability = 0.960 + 1.63 * totBestMoveChanges / threads.size();
 
             double highBestMoveEffort = std::clamp(
-              interpolate(int64_t(nodesEffort), int64_t(78000), int64_t(94000), 0.96, 0.74), 0.74,
-              0.96);
+              interpolate(int64_t(nodesEffort), int64_t(78000), int64_t(94000), 0.960, 0.74), 0.74,
+              0.960);
 
             double totalTime = mainThread->tm.optimum() * fallingEval * reduction
                              * bestMoveInstability * highBestMoveEffort;
@@ -574,11 +588,11 @@ void Search::Worker::undo_null_move(Position& pos) { pos.undo_null_move(); }
 
 // Reset histories, usually before a new game
 void Search::Worker::clear() {
-    mainHistory.fill(0);
+    mainHistory.fill(-5);
     captureHistory.fill(-607);
 
     // Each thread is responsible for clearing their part of shared history
-    sharedHistory.correctionHistory.clear_range(0, numaThreadIdx, numaTotal);
+    sharedHistory.correctionHistory.clear_range(-6, numaThreadIdx, numaTotal);
     sharedHistory.pawnHistory.clear_range(-1247, numaThreadIdx, numaTotal);
 
     ttMoveHistory = 0;
@@ -596,7 +610,7 @@ void Search::Worker::clear() {
     for (size_t i = 1; i < reductions.size(); ++i)
         reductions[i] = int(1740 / 100.0 * std::log(i));
 
-    refreshTable.clear(networks[numaAccessToken]);
+    refreshTable.clear(network[numaAccessToken]);
 }
 
 
@@ -700,6 +714,8 @@ Value Search::Worker::search(
     ss->statScore       = 0;
     (ss + 2)->cutoffCnt = 0;
 
+    const auto correctionValue = correction_value(*this, pos, ss);
+
     // Step 4. Transposition table lookup
     excludedMove                   = ss->excludedMove;
     posKey                         = pos.key();
@@ -712,8 +728,8 @@ Value Search::Worker::search(
     ttCapture    = ttData.move && pos.capture(ttData.move);
 
     // Step 5. Static evaluation of the position
-    Value      unadjustedStaticEval = VALUE_NONE;
-    const auto correctionValue      = correction_value(*this, pos, ss);
+    Value unadjustedStaticEval = VALUE_NONE;
+
     // Skip early pruning when in check
     if (ss->inCheck)
         ss->staticEval = eval = (ss - 2)->staticEval;
@@ -799,6 +815,12 @@ Value Search::Worker::search(
             else
                 return ttData.value;
         }
+    }  // No cutoff, but why? Does the stored inexact value mismatch our aspiration window?
+    else if (!PvNode && !excludedMove && ttData.depth > depth - (ttData.value <= beta)
+             && is_valid(ttData.value) && ttData.bound != BOUND_EXACT
+             && ttData.bound & (ttData.value >= beta ? BOUND_UPPER : BOUND_LOWER) && depth > 5)
+    {  // If a window-bound mismatch is the only reason cutoff failed, penalize the now-useless tte
+        ttWriter.penalize(1);
     }
 
     if (ss->inCheck)
@@ -824,13 +846,15 @@ Value Search::Worker::search(
     if (!ss->ttPv && depth < 15 && eval >= beta && (!ttData.move || ttCapture) && !is_loss(beta)
         && !is_win(eval))
     {
-        Value futilityMult   = 129 - 33 * !ss->ttHit;
+        Value futilityMult = interpolate(std::min(int(depth), 10), 1, 10, 40, 129);
+        futilityMult -= 33 * !ss->ttHit;
+
         Value futilityMargin = futilityMult * depth
                              - (2512 * improving + 340 * opponentWorsening) * futilityMult / 1024
                              + std::abs(correctionValue) / 132109;
 
         if (eval - futilityMargin >= beta)
-            return (2 * beta + eval) / 3;
+            return (716 * beta + 308 * eval) / 1024;
     }
 
     // Step 8. Null move search with verification search
@@ -873,7 +897,7 @@ Value Search::Worker::search(
     // Step 9. Internal iterative reductions
     // At sufficient depth, reduce depth for PV/Cut nodes without a TTMove.
     // (*Scaler) Making IIR more aggressive scales poorly.
-    if (!ss->followPV && !allNode && depth >= 6 && !ttData.move && priorReduction <= 3)
+    if (!ss->followPV && !allNode && depth >= 6 && !ttData.move)
         depth--;
 
     // Step 10. ProbCut
@@ -1100,7 +1124,7 @@ moves_loop:  // When in check, search starts here
             // subtree by returning a softbound.
             else if (value >= beta && !is_decisive(value))
             {
-                ttMoveHistory << std::max(-397 - 103 * depth, -4055);
+                ttMoveHistory << -397 - 103 * depth;
                 return value;
             }
 
@@ -1121,12 +1145,13 @@ moves_loop:  // When in check, search starts here
                 extension = -2;
         }
 
+        uint64_t nodeCount = rootNode ? uint64_t(nodes) : 0;
+
         // Step 15. Make the move
         do_move(pos, move, st, givesCheck, ss);
 
         // Add extension to new depth
         newDepth += extension;
-        uint64_t nodeCount = rootNode ? uint64_t(nodes) : 0;
 
         // Decrease reduction for PvNodes (*Scaler)
         if (ss->ttPv)
@@ -1150,8 +1175,8 @@ moves_loop:  // When in check, search starts here
             r += 256 + 1024 * ((ss + 1)->cutoffCnt > 2) + 1024 * allNode;
 
         // For first picked move (ttMove) reduce reduction
-        if (move == ttData.move)
-            r -= 2953;
+        else if (move == ttData.move)
+            r = std::max(-10, r - 2730 + 150 * cutNode);
 
         if (capture)
             ss->statScore = 953 * int(PieceValue[pos.captured_piece()]) / 128
@@ -1260,7 +1285,7 @@ moves_loop:  // When in check, search starts here
             {
                 rm.score = rm.uciScore = value;
                 rm.selDepth            = selDepth;
-                rm.scoreLowerbound = rm.scoreUpperbound = false;
+                rm.unset_bound_flags();
 
                 if (value >= beta)
                 {
@@ -1543,7 +1568,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         if (bestValue >= beta)
         {
             if (!is_decisive(bestValue))
-                bestValue = (bestValue + beta) / 2;
+                bestValue = (467 * bestValue + 557 * beta) / 1024;
 
             if (!ss->ttHit)
                 ttWriter.write(posKey, VALUE_NONE, false, BOUND_LOWER, DEPTH_UNSEARCHED,
@@ -1661,7 +1686,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     }
 
     if (!is_decisive(bestValue) && bestValue > beta)
-        bestValue = (bestValue + beta) / 2;
+        bestValue = (481 * bestValue + 543 * beta) / 1024;
 
     // Save gathered info in transposition table. The static evaluation
     // is saved as it was before adjustment by correction history.
@@ -1694,7 +1719,7 @@ TimePoint Search::Worker::elapsed() const {
 TimePoint Search::Worker::elapsed_time() const { return main_manager()->tm.elapsed_time(); }
 
 Value Search::Worker::evaluate(const Position& pos) {
-    return Eval::evaluate(networks[numaAccessToken], pos, accumulatorStack, refreshTable,
+    return Eval::evaluate(network[numaAccessToken], pos, accumulatorStack, refreshTable,
                           optimism[pos.side_to_move()]);
 }
 
@@ -1824,7 +1849,7 @@ void update_quiet_histories(
     update_continuation_histories(ss, pos.moved_piece(move), move.to_sq(), bonus * 972 / 1024);
 
     workerThread.sharedHistory.pawn_entry(pos)[pos.moved_piece(move)][move.to_sq()]
-      << bonus * (bonus > 0 ? 913 : 553) / 1024;
+      << bonus * (bonus > -7 ? 913 : 553) / 1024;
 }
 }
 
@@ -1866,18 +1891,17 @@ void SearchManager::pv(Search::Worker&           worker,
     const auto  nodes     = threads.nodes_searched();
     const auto& rootMoves = worker.rootMoves;
     const auto& pos       = worker.rootPos;
-    size_t      pvIdx     = worker.pvIdx;
     size_t      multiPV   = std::min(size_t(worker.options["MultiPV"]), rootMoves.size());
 
     for (size_t i = 0; i < multiPV; ++i)
     {
-        bool updated = rootMoves[i].score != -VALUE_INFINITE;
+        bool usePreviousScore = rootMoves[i].score == -VALUE_INFINITE;
 
-        if (depth == 1 && !updated && i > 0)
+        if (depth == 1 && usePreviousScore && i > 0)
             continue;
 
-        Depth d = updated ? depth : std::max(1, depth - 1);
-        Value v = updated ? rootMoves[i].uciScore : rootMoves[i].previousScore;
+        Depth d = usePreviousScore ? std::max(1, depth - 1) : depth;
+        Value v = usePreviousScore ? rootMoves[i].previousScore : rootMoves[i].uciScore;
 
         if (v == -VALUE_INFINITE)
             v = VALUE_ZERO;
@@ -1903,7 +1927,8 @@ void SearchManager::pv(Search::Worker&           worker,
         info.score    = {v, pos};
         info.wdl      = wdl;
 
-        if (i == pvIdx && updated)  // previous-scores are exact
+        // TB and previous scores are exact, even though their bound flags may say otherwise.
+        if (!usePreviousScore)
             info.bound = bound;
 
         TimePoint time = std::max(TimePoint(1), tm.elapsed_time());

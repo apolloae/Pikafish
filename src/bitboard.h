@@ -302,7 +302,6 @@ inline int popcount(Bitboard b) {
 #endif
 }
 
-
 // Return the least significant bit in a non-zero bitboard
 inline Square lsb(Bitboard b) {
     assert(b);
