@@ -25,6 +25,13 @@ ifeq ($(KERNEL),Linux)
 	OS := $(shell uname -o)
 endif
 
+### Target operating system (may differ from KERNEL when cross-compiling)
+TARGET_KERNEL := $(KERNEL)
+ifeq ($(COMP),ndk)
+	TARGET_KERNEL := Linux
+	OS := Android
+endif
+
 ### Command prefix to run the built executable (e.g. wine, sde, qemu)
 ### Backward compatible alias: WINE_PATH (deprecated)
 ifneq ($(strip $(WINE_PATH)),)
@@ -55,6 +62,8 @@ endif
 ### Executable name
 ifeq ($(target_windows),yes)
 	EXE = pikafish.exe
+else ifneq (,$(findstring wasm,$(ARCH)))
+	EXE = pikafish.js
 else
 	EXE = pikafish
 endif
@@ -109,7 +118,8 @@ VPATH = $(shell find -L . \( -path './universal' -o -path './temp_builds' \) -pr
 # neon = yes/no       --- -DUSE_NEON         --- Use ARM SIMD architecture
 # dotprod = yes/no    --- -DUSE_NEON_DOTPROD --- Use ARM advanced SIMD Int8 dot product instructions
 # lsx = yes/no        --- -mlsx              --- Use Loongson SIMD eXtension
-# lasx = yes/no       --- -mlasx             --- use Loongson Advanced SIMD eXtension
+# lasx = yes/no       --- -mlasx             --- Use Loongson Advanced SIMD eXtension
+# relaxedsimd = y/n   --- -mrelaxed-simd     --- Use WebAssembly relaxed SIMD extension
 #
 # Note that Makefile is space sensitive, so when adding new architectures
 # or modifying existing flags, you have to make sure there are no extra spaces
@@ -136,13 +146,13 @@ ifeq ($(ARCH), $(filter $(ARCH), \
                  x86-64-bmi2 x86-64-avx2 x86-64-sse41-popcnt x86-64-modern x86-64-ssse3 x86-64-sse3-popcnt \
                  x86-64 x86-32-sse41-popcnt x86-32-sse2 x86-32 ppc-64 ppc-64-altivec ppc-64-vsx ppc-32 e2k \
                  armv7 armv7-neon armv8 armv8-dotprod arm64-universal apple-silicon general-64 general-32 riscv64 \
-                 loongarch64 loongarch64-lsx loongarch64-lasx))
+                 riscv64-rva23 riscv64-universal loongarch64 loongarch64-lsx loongarch64-lasx wasm32 wasm32-relaxed-simd))
    SUPPORTED_ARCH=true
 else
    SUPPORTED_ARCH=false
 endif
 
-ifneq (,$(findstring universal,$(ARCH)))
+ifneq (,$(filter $(ARCH),x86-64-universal arm64-universal riscv64-universal))
    UNIVERSAL_BUILD=true
 else
    UNIVERSAL_BUILD=false
@@ -171,8 +181,10 @@ vsx = no
 neon = no
 dotprod = no
 arm_version = 0
+rva23 = no
 lsx = no
 lasx = no
+relaxedsimd = no
 STRIP = strip
 
 ifneq ($(shell which clang-format-20 2> /dev/null),)
@@ -376,6 +388,25 @@ ifeq ($(ARCH),apple-silicon)
 	arm_version = 8
 endif
 
+# WASM is largely compiled using emcc's x86 compatibility layer, with occasional
+# WASM-specific intrinsics
+ifeq ($(ARCH),wasm32)
+	arch = wasm32
+	sse = yes
+	sse2 = yes
+	ssse3 = yes
+	sse41 = yes
+endif
+
+ifeq ($(ARCH),wasm32-relaxed-simd)
+	arch = wasm32
+	sse = yes
+	sse2 = yes
+	ssse3 = yes
+	sse41 = yes
+	relaxedsimd = yes
+endif
+
 ifeq ($(ARCH),ppc-32)
 	arch = ppc
 	bits = 32
@@ -412,8 +443,14 @@ ifeq ($(findstring e2k,$(ARCH)),e2k)
 	popcnt = yes
 endif
 
-ifeq ($(ARCH),riscv64)
+ifeq ($(findstring riscv64,$(ARCH)),riscv64)
 	arch = riscv64
+endif
+
+ifeq ($(ARCH),riscv64-rva23)
+	rva23 = yes
+	popcnt = yes
+	prefetch = yes
 endif
 
 ifeq ($(findstring loongarch64,$(ARCH)),loongarch64)
@@ -462,12 +499,9 @@ ifeq ($(COMP),gcc)
 			CXXFLAGS += -m$(bits)
 			LDFLAGS += -m$(bits)
 		endif
-		ifeq ($(ARCH),riscv64)
-			CXXFLAGS += -latomic
-		endif
 	else ifeq ($(arch),loongarch64)
 		CXXFLAGS += -latomic
-	else
+	else ifneq ($(arch),wasm32)
 		CXXFLAGS += -m$(bits)
 		LDFLAGS += -m$(bits)
 	endif
@@ -476,8 +510,10 @@ ifeq ($(COMP),gcc)
 		LDFLAGS += -latomic
 	endif
 
-	ifneq ($(KERNEL),Darwin)
+	ifneq ($(TARGET_KERNEL),Darwin)
+	ifneq ($(arch),wasm32)
 	   LDFLAGS += -Wl,--no-as-needed
+	endif
 	endif
 endif
 
@@ -501,14 +537,14 @@ ifeq ($(COMP),mingw)
 			CXX=i686-w64-mingw32-c++-posix
 		endif
 	endif
-	CXXFLAGS += -pedantic -Wextra -Wshadow -Wmissing-declarations -fconstexpr-ops-limit=500000000
+	CXXFLAGS += -pedantic -Wextra -Wshadow -Wmissing-declarations
 endif
 
 ifeq ($(COMP),icx)
 	comp=icx
 	CXX=icpx
 	CXXFLAGS += --intel -pedantic -Wextra -Wshadow -Wmissing-prototypes \
-		-Wconditional-uninitialized -Wabi -Wdeprecated -fconstexpr-steps=500000000
+		-Wconditional-uninitialized -Wabi -Wdeprecated
 endif
 
 ifeq ($(COMP),clang)
@@ -519,9 +555,9 @@ ifeq ($(COMP),clang)
 	endif
 
 	CXXFLAGS += -pedantic -Wextra -Wshadow -Wmissing-prototypes \
-	            -Wconditional-uninitialized -flax-vector-conversions=none -fconstexpr-steps=500000000
+	            -Wconditional-uninitialized -flax-vector-conversions=none
 
-	ifeq ($(filter $(KERNEL),Darwin OpenBSD FreeBSD),)
+	ifeq ($(filter $(TARGET_KERNEL),Darwin OpenBSD FreeBSD),)
 	ifeq ($(target_windows),)
 	ifneq ($(RTLIB),compiler-rt)
 		LDFLAGS += -latomic
@@ -534,9 +570,6 @@ ifeq ($(COMP),clang)
 			CXXFLAGS += -m$(bits)
 			LDFLAGS += -m$(bits)
 		endif
-		ifeq ($(ARCH),riscv64)
-			CXXFLAGS += -latomic
-		endif
 	else ifeq ($(arch),loongarch64)
 		CXXFLAGS += -latomic
 	else
@@ -545,7 +578,7 @@ ifeq ($(COMP),clang)
 	endif
 endif
 
-ifeq ($(KERNEL),Darwin)
+ifeq ($(TARGET_KERNEL),Darwin)
 	mac_target_flags := -mmacosx-version-min=10.15
 	ifneq ($(arch),any)
 		mac_target_flags += -arch $(arch)
@@ -615,7 +648,7 @@ else ifeq ($(comp),clang)
 else
 	profile_make = gcc-profile-make
 	profile_use = gcc-profile-use
-	ifeq ($(KERNEL),Darwin)
+	ifeq ($(TARGET_KERNEL),Darwin)
 		EXTRAPROFILEFLAGS = -fvisibility=hidden
 	endif
 endif
@@ -627,35 +660,34 @@ ifeq ($(COMP),gcc)
 	ifneq ($(gccisclang),)
 		profile_make = clang-profile-make
 		profile_use = clang-profile-use
-		CXXFLAGS += -fconstexpr-steps=500000000
 	else
-		CXXFLAGS += -Wstack-usage=128000 -fno-ipa-cp-clone -fconstexpr-ops-limit=500000000
+		CXXFLAGS += -Wstack-usage=128000 -fno-ipa-cp-clone
 	endif
+else ifeq ($(COMP),mingw)
+	CXXFLAGS += -fno-ipa-cp-clone
 endif
 
-### On mingw use Windows threads, otherwise POSIX
-ifneq ($(comp),mingw)
-	CXXFLAGS += -DUSE_PTHREADS
-	# On Android Bionic's C library comes with its own pthread implementation bundled in
-	ifneq ($(OS),Android)
-		# Haiku has pthreads in its libroot, so only link it in on other platforms
-		ifneq ($(KERNEL),Haiku)
-			ifneq ($(COMP),ndk)
-				LDFLAGS += -lpthread
+# On Android Bionic's C library comes with its own pthread implementation bundled in
+ifneq ($(OS),Android)
+	# Haiku has pthreads in its libroot, so only link it in on other platforms
+	ifneq ($(KERNEL),Haiku)
+		ifneq ($(COMP),ndk)
+		ifneq ($(arch),wasm32)
+			LDFLAGS += -lpthread
 
-				add_lrt = yes
-				ifeq ($(target_windows),yes)
-					add_lrt = no
-				endif
-
-				ifeq ($(KERNEL),Darwin)
-					add_lrt = no
-				endif
-
-				ifeq ($(add_lrt),yes)
-					LDFLAGS += -lrt
-				endif
+			add_lrt = yes
+			ifeq ($(target_windows),yes)
+				add_lrt = no
 			endif
+
+			ifeq ($(TARGET_KERNEL),Darwin)
+				add_lrt = no
+			endif
+
+			ifeq ($(add_lrt),yes)
+				LDFLAGS += -lrt
+			endif
+		endif
 		endif
 	endif
 endif
@@ -685,7 +717,7 @@ ifeq ($(optimize),yes)
 		endif
 	endif
 
-	ifeq ($(KERNEL),Darwin)
+	ifeq ($(TARGET_KERNEL),Darwin)
 		ifeq ($(comp),$(filter $(comp),clang icx))
 			CXXFLAGS += -mdynamic-no-pic
 		endif
@@ -720,7 +752,7 @@ else
 endif
 
 ifeq ($(popcnt),yes)
-	ifeq ($(arch),$(filter $(arch),ppc64 ppc64-altivec ppc64-vsx armv7 armv8 arm64))
+	ifeq ($(arch),$(filter $(arch),ppc64 ppc64-altivec ppc64-vsx armv7 armv8 arm64 riscv64))
 		CXXFLAGS += -DUSE_POPCNT
 	else
 		CXXFLAGS += -msse3 -mpopcnt -DUSE_POPCNT
@@ -806,7 +838,7 @@ endif
 
 ifeq ($(neon),yes)
 	CXXFLAGS += -DUSE_NEON=$(arm_version)
-	ifeq ($(KERNEL),Linux)
+	ifeq ($(TARGET_KERNEL),Linux)
 	ifneq ($(COMP),ndk)
 	ifneq ($(arch),armv8)
 		CXXFLAGS += -mfpu=neon
@@ -817,6 +849,10 @@ endif
 
 ifeq ($(dotprod),yes)
 	CXXFLAGS += -march=armv8.2-a+dotprod -DUSE_NEON_DOTPROD
+endif
+
+ifeq ($(rva23),yes)
+	CXXFLAGS += -march=rv64gcv1p0_zba_zbb_zbs_zicbop_zicond -DUSE_RVV
 endif
 
 ifeq ($(lasx),yes)
@@ -833,6 +869,14 @@ ifeq ($(lsx),yes)
 	endif
 endif
 
+ifeq ($(arch),wasm32)
+	CXXFLAGS += -pthread -msimd128 -DUSE_POPCNT -DUSE_SLOPPY_ATOMICS
+	LDFLAGS += -pthread -sINITIAL_MEMORY=64MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=3MB
+	ifeq ($(relaxedsimd),yes)
+		CXXFLAGS += -mrelaxed-simd
+	endif
+endif
+
 ### 3.7 pext
 ifeq ($(pext),yes)
 	CXXFLAGS += -DUSE_PEXT
@@ -842,13 +886,15 @@ ifeq ($(pext),yes)
 endif
 
 ### 3.8.1 Try to include git info for versioning and avoid recompiles if nothing changes
-BUILD_SHA_FILE  := .build_sha.txt
-BUILD_DATE_FILE := .build_date.txt
-GIT_SHA         := $(shell git rev-parse HEAD 2>/dev/null | cut -c 1-8 || true)
-GIT_DATE        := $(shell git show -s --date=format:%Y%m%d --format=%cd HEAD 2>/dev/null || true)
-COMPILER_DATE   := $(shell date +%Y%m%d 2>/dev/null)
+BUILD_SHA_FILE       := .build_sha.txt
+BUILD_DATE_FILE      := .build_date.txt
+BUILD_DIFFINDEX_FILE := .build_diffindex.txt
+GIT_SHA              := $(shell git rev-parse HEAD 2>/dev/null | cut -c 1-8 || true)
+GIT_DATE             := $(shell git show -s --date=format:%Y%m%d --format=%cd HEAD 2>/dev/null || true)
+GIT_DIFFINDEX        := $(shell git update-index --refresh >/dev/null 2>&1; git -c core.filemode=false -c core.autocrlf=false  diff-index --quiet HEAD -- 2>/dev/null; [ $$? -eq 1 ] && echo 1 || true)
+COMPILER_DATE        := $(shell date +%Y%m%d 2>/dev/null)
 
-BUILD_DATE      := $(if $(GIT_DATE),$(GIT_DATE),$(COMPILER_DATE))
+BUILD_DATE           := $(if $(GIT_DATE),$(GIT_DATE),$(COMPILER_DATE))
 
 define cache_file_contents
 $(shell \
@@ -860,6 +906,7 @@ endef
 ifneq ($(filter $(MAKECMDGOALS),help strip install clean net objclean profileclean format config-sanity),$(MAKECMDGOALS))
 _ := $(call cache_file_contents,$(BUILD_SHA_FILE),$(GIT_SHA))
 _ := $(call cache_file_contents,$(BUILD_DATE_FILE),$(BUILD_DATE))
+_ := $(call cache_file_contents,$(BUILD_DIFFINDEX_FILE),$(BUILD_DIFFINDEX))
 endif
 
 ### 3.8.2 Try to include architecture
@@ -872,7 +919,8 @@ endif
 ### needs access to the optimization flags.
 ifeq ($(optimize),yes)
 ifeq ($(debug),no)
-	ifneq ($(KERNEL),Darwin)
+	ifeq ($(arch),wasm32)
+	else ifneq ($(TARGET_KERNEL),Darwin)
 		LLD_BIN := $(shell command -v ld.lld 2>/dev/null)
 		ifeq ($(LLD_BIN),)
 			LLD_BIN := $(shell command -v lld 2>/dev/null)
@@ -982,6 +1030,8 @@ help:
 	echo "general-64              > unspecified 64-bit" && \
 	echo "general-32              > unspecified 32-bit" && \
 	echo "riscv64                 > RISC-V 64-bit" && \
+	echo "riscv64-rva23           > RISC-V 64-bit RVA23 profile" && \
+	echo "riscv64-universal       > RISC-V 64-bit with automatic runtime selection of the best architecture" && \
 	echo "loongarch64             > LoongArch 64-bit" && \
 	echo "loongarch64-lsx         > LoongArch 64-bit with SIMD eXtension" && \
 	echo "loongarch64-lasx        > LoongArch 64-bit with Advanced SIMD eXtension" && \
@@ -1061,7 +1111,7 @@ macos-lipo:
 	@rm -f $(EXE)-x86_64 $(EXE)-arm64
 	@echo "Universal macOS binary built: $(EXE)"
 
-ifeq ($(KERNEL),Darwin)
+ifeq ($(TARGET_KERNEL),Darwin)
 # Apple uses ld64 which doesn't have --save-temps
   LTO_OBJ_SUFFIX := .lto.o
   SAVE_TEMPS := -Wl,-object_path_lto,$(basename $(EXE)).lto.o
@@ -1131,7 +1181,7 @@ clean: objclean profileclean universalclean
 
 # clean binaries and objects
 objclean:
-	@rm -f pikafish pikafish.exe $(shell find . -name '*.o') $(BUILD_SHA_FILE) $(BUILD_DATE_FILE)
+	@rm -f pikafish pikafish.exe $(shell find . -name '*.o') $(BUILD_SHA_FILE) $(BUILD_DATE_FILE) $(BUILD_DIFFINDEX_FILE)
 
 # clean auxiliary profiling files
 profileclean:
@@ -1204,7 +1254,8 @@ config-sanity: net
 	(test "$(arch)" = "any" || test "$(arch)" = "x86_64" || test "$(arch)" = "i386" || \
 	 test "$(arch)" = "ppc64" || test "$(arch)" = "ppc" || test "$(arch)" = "e2k" || \
 	 test "$(arch)" = "armv7" || test "$(arch)" = "armv8" || test "$(arch)" = "arm64" || \
-	 test "$(arch)" = "riscv64" || test "$(arch)" = "loongarch64") && \
+	 test "$(arch)" = "riscv64" || test "$(arch)" = "loongarch64" || \
+	 test "$(arch)" = "wasm32") && \
 	(test "$(bits)" = "32" || test "$(bits)" = "64") && \
 	(test "$(prefetch)" = "yes" || test "$(prefetch)" = "no") && \
 	(test "$(popcnt)" = "yes" || test "$(popcnt)" = "no") && \
@@ -1236,8 +1287,8 @@ $(EXE): $(OBJS)
 %.o: %.cpp
 	$(strip $(CXX) $(CPPFLAGS) $(CXXFLAGS)) -c -o $@ $<
 
-misc.o: misc.cpp $(BUILD_SHA_FILE) $(BUILD_DATE_FILE)
-	$(strip $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(if $(GIT_SHA),-DGIT_SHA=$(GIT_SHA)) $(if $(GIT_DATE),-DGIT_DATE=$(GIT_DATE))) -c -o $@ $<
+misc.o: misc.cpp $(BUILD_SHA_FILE) $(BUILD_DATE_FILE) $(BUILD_DIFFINDEX_FILE)
+	$(strip $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(if $(GIT_SHA),-DGIT_SHA=$(GIT_SHA)) $(if $(GIT_DATE),-DGIT_DATE=$(GIT_DATE))) $(if $(GIT_DIFFINDEX),-DGIT_DIFFINDEX=$(GIT_DIFFINDEX)) -c -o $@ $<
 
 clang-profile-make:
 	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) \
@@ -1312,6 +1363,11 @@ ifeq ($(arch),x86_64)
   UNIVERSAL_ENTRY_OBJ  := $(TEMP_DIR)/entry_x86.o
   UNIVERSAL_ENTRY_SRC  := $(UNIVERSAL_SRC_DIR)/entry_x86.cpp
   BASELINE_ARCH := x86-64
+else ifeq ($(arch),riscv64)
+  UNIVERSAL_ARCHES := riscv64 riscv64-rva23
+  UNIVERSAL_ENTRY_OBJ  := $(TEMP_DIR)/entry_riscv64.o
+  UNIVERSAL_ENTRY_SRC  := $(UNIVERSAL_SRC_DIR)/entry_riscv64.cpp
+  BASELINE_ARCH := riscv64
 else
   UNIVERSAL_ARCHES := armv8 armv8-dotprod
   UNIVERSAL_ENTRY_OBJ  := $(TEMP_DIR)/entry_arm64.o
@@ -1331,9 +1387,9 @@ UNIVERSAL_COMMON_OBJ := $(patsubst %,$(TEMP_DIR)/$(BASELINE_ARCH)/%,$(notdir $(p
 
 UNIVERSAL_FINAL_FLAGS := -fno-exceptions -Os
 
-ifeq ($(KERNEL),Darwin)
+ifeq ($(TARGET_KERNEL),Darwin)
   UNIVERSAL_FINAL_FLAGS += $(mac_target_flags)
-else ifeq ($(KERNEL),Linux)
+else ifeq ($(TARGET_KERNEL),Linux)
   ifeq ($(COMP),ndk)
     UNIVERSAL_FINAL_FLAGS += -static
   else
@@ -1355,7 +1411,7 @@ arch-mangled    = _ZN$(shell printf %s '$(call arch-namespace,$(1))' | wc -c | t
 # (Mach-O section names are restricted to <=16 chars, hence this naming scheme)
 arch-mac-section = _i_$(subst -,_,$(patsubst x86-64,,$(patsubst x86-64-%,%,$(1))))
 
-ifeq ($(KERNEL),Darwin)
+ifeq ($(TARGET_KERNEL),Darwin)
   arch-defmain = -Wl,-alias,_$(call arch-mangled,$(1)),_main
 # lld-link, used on Windows+clang, doesn't accept --defsym, so
 # we define main directly in main.cpp instead and delete it later.
@@ -1369,7 +1425,11 @@ arch-cxxflags   = -DStockfish=$(call arch-namespace,$(1)) -DUNIVERSAL_BINARY $(c
                   -Wno-unused-command-line-argument
 
 UOBJ_TGT ?= universal-object-pgo
-OBJCOPY  ?= objcopy
+ifeq ($(COMP),clang)
+	OBJCOPY ?= llvm-objcopy
+else
+	OBJCOPY ?= objcopy
+endif
 
 .PHONY: build profile-build universal-clean
 build:         UOBJ_TGT := universal-object-nopgo
@@ -1386,7 +1446,7 @@ $(NET_SENTINEL): | $(TEMP_DIR)
 	@touch $@
 
 $(UNIVERSAL_ENTRY_OBJ): $(UNIVERSAL_ENTRY_SRC) | $(TEMP_DIR)
-	$(CXX) -O2 -std=c++20 $(mac_target_flags) -c $< -o $@
+	$(CXX) -O2 -std=c++20 $(mac_target_flags) $(EXTRACXXFLAGS) -c $< -o $@
 
 # Symlink tracked top-level items from src/ into temp_builds/<arch>/.
 $(TEMP_DIR)/%/.setup: | $(TEMP_DIR)
@@ -1402,7 +1462,7 @@ $(TEMP_DIR)/%/pikafish.o: $(TEMP_DIR)/%/.setup $(NET_SENTINEL)
 	+ENV_CXXFLAGS='$(ENV_CXXFLAGS) $(call arch-cxxflags,$*)' \
 	    $(MAKE) -C $(TEMP_DIR)/$* $(UOBJ_TGT) \
 	        ARCH=$* CXX=$(CXX) COMP=$(COMP)
-ifeq ($(KERNEL),Darwin)
+ifeq ($(TARGET_KERNEL),Darwin)
 # Rename the initializer section
 	ld -r -rename_section __DATA __mod_init_func __DATA $(call arch-mac-section,$*) $@ -o $@.tmp
 	mv $@.tmp $@
@@ -1423,7 +1483,7 @@ endif
 endif
 
 $(UNIVERSAL_EXE): $(UNIVERSAL_ENTRY_OBJ) $(ARCH_OBJS)
-	$(CXX) -o $@ $(UNIVERSAL_ENTRY_OBJ) $(ARCH_OBJS) $(UNIVERSAL_COMMON_OBJ) $(UNIVERSAL_FINAL_FLAGS)
+	$(CXX) -o $@ $(UNIVERSAL_ENTRY_OBJ) $(ARCH_OBJS) $(UNIVERSAL_COMMON_OBJ) $(UNIVERSAL_FINAL_FLAGS) $(EXTRALDFLAGS)
 	@echo "Universal binary built: $@"
 
 endif  # UNIVERSAL_BUILD

@@ -32,6 +32,7 @@
 #include <string>
 #include <utility>
 
+#include "attacks.h"
 #include "bitboard.h"
 #include "misc.h"
 #include "nnue/features/half_ka_v2_hm.h"
@@ -49,13 +50,13 @@ struct SharedHistories;
 struct StateInfo {
 
     // Copied when making a move
-    Key     pawnKey;
-    Key     minorPieceKey;
-    Key     nonPawnKey[COLOR_NB];
-    Value   majorMaterial[COLOR_NB];
-    int16_t check10[COLOR_NB];
-    int     rule60;
-    int     pliesFromNull;
+    Key   pawnKey;
+    Key   minorPieceKey;
+    Key   nonPawnKey[COLOR_NB];
+    Value majorMaterial[COLOR_NB];
+    i16   check10[COLOR_NB];
+    int   rule60;
+    int   pliesFromNull;
 
     // Not copied when making a move (will be recomputed anyhow)
     Key        key;
@@ -112,9 +113,9 @@ class Position {
     template<PieceType Pt>
     int count(Color c) const;
     template<PieceType Pt>
-    int      count() const;
-    Square   king_square(Color c) const;
-    uint64_t mid_encoding(Color c) const;
+    int    count() const;
+    Square king_square(Color c) const;
+    u64    mid_encoding(Color c) const;
 
     // Checking
     Bitboard checkers() const;
@@ -145,8 +146,7 @@ class Position {
     void do_move(Move                      m,
                  StateInfo&                newSt,
                  bool                      givesCheck,
-                 DirtyPiece&               dp,
-                 DirtyThreats&             dts,
+                 Dirties&                  dirties,
                  const TranspositionTable* tt,
                  const SharedHistories*    worker);
     void undo_move(Move m);
@@ -158,23 +158,24 @@ class Position {
 
     // Accessing hash keys
     Key key() const;
+    Key prefetch_key(Move m) const;
     Key pawn_key() const;
     Key minor_piece_key() const;
     Key defender_piece_key() const;
     Key non_pawn_key(Color c) const;
 
     // Other properties of the position
-    Color    side_to_move() const;
-    int      game_ply() const;
-    bool     rule_judge(Value& result, int ply = 0);
-    int      rule60_count() const;
-    uint16_t chased(Color c);
-    Value    major_material(Color c) const;
-    Value    major_material() const;
+    Color side_to_move() const;
+    int   game_ply() const;
+    bool  rule_judge(Value& result, int ply = 0);
+    int   rule60_count() const;
+    u16   chased(Color c);
+    Value major_material(Color c) const;
+    Value major_material() const;
 
     // Position consistency check, for debugging
-    bool pos_is_ok() const;
-    void flip();
+    bool                            pos_is_ok() const;
+    std::optional<PositionSetError> flip();
 
     StateInfo* state() const;
 
@@ -195,7 +196,8 @@ class Position {
     void                  undo_move(Move m, Piece captured, int id = 0);
     Value                 detect_chases(int d, int ply = 0);
     bool                  chase_legal(Move m) const;
-    Key                   adjust_key60(Key k) const;
+    template<bool AfterMove = false>
+    Key adjust_key60(Key k) const;
 
     // Data members
     std::array<Piece, SQUARE_NB>        board;
@@ -203,7 +205,7 @@ class Position {
     std::array<Bitboard, COLOR_NB>      byColorBB;
 
     int        pieceCount[PIECE_NB];
-    uint64_t   midEncoding[COLOR_NB];
+    u64        midEncoding[COLOR_NB];
     StateInfo* st;
     int        gamePly;
     Color      sideToMove;
@@ -214,8 +216,7 @@ class Position {
     // Board for chasing detection
     int idBoard[SQUARE_NB];
 
-    DirtyPiece   scratch_dp;
-    DirtyThreats scratch_dts;
+    Dirties scratchDirties;
 };
 
 std::ostream& operator<<(std::ostream& os, const Position& pos);
@@ -258,11 +259,10 @@ inline int Position::count() const {
 }
 
 inline Square Position::king_square(Color c) const {
-    return c == WHITE ? lsb(uint64_t(pieces(KING)))
-                      : Square(64 + lsb(uint64_t(pieces(KING) >> 64)));
+    return c == WHITE ? lsb(u64(pieces(KING))) : Square(64 + lsb(u64(pieces(KING) >> 64)));
 }
 
-inline uint64_t Position::mid_encoding(Color c) const { return midEncoding[c]; }
+inline u64 Position::mid_encoding(Color c) const { return midEncoding[c]; }
 
 inline Bitboard Position::attackers_to(Square s) const { return attackers_to(s, pieces()); }
 
@@ -277,9 +277,9 @@ inline Bitboard Position::attacks_by(Color c) const {
     Bitboard attackers = pieces(c, Pt);
     while (attackers)
         if (Pt == PAWN)
-            threats |= attacks_bb<PAWN>(pop_lsb(attackers), c);
+            threats |= Attacks::attacks_bb<PAWN>(pop_lsb(attackers), c);
         else
-            threats |= attacks_bb<Pt>(pop_lsb(attackers), pieces());
+            threats |= Attacks::attacks_bb<Pt>(pop_lsb(attackers), pieces());
     return threats;
 }
 
@@ -293,9 +293,10 @@ inline Bitboard Position::check_squares(PieceType pt) const { return st->checkSq
 
 inline Key Position::key() const { return adjust_key60(st->key); }
 
+template<bool AfterMove>
 inline Key Position::adjust_key60(Key k) const {
-    return (st->rule60 < 14 ? k : k ^ make_key((st->rule60 - 14) / 8))
-         ^ (filter[st->key] ? make_key(14) : 0);
+    return (st->rule60 < (14 - AfterMove) ? k : k ^ make_key((st->rule60 - (14 - AfterMove)) / 8))
+         ^ (filter[k] ? make_key(14) : 0);
 }
 
 inline Key Position::pawn_key() const { return st->pawnKey; }
@@ -385,8 +386,8 @@ inline void Position::swap_piece(Square s, Piece pc, DirtyThreats* const dts) {
 }
 
 inline void Position::do_move(Move m, StateInfo& newSt, const TranspositionTable* tt = nullptr) {
-    new (&scratch_dts) DirtyThreats;
-    do_move(m, newSt, gives_check(m), scratch_dp, scratch_dts, tt, nullptr);
+    new (&scratchDirties.dirtyThreats) DirtyThreats;
+    do_move(m, newSt, gives_check(m), scratchDirties, tt, nullptr);
 }
 
 inline StateInfo* Position::state() const { return st; }

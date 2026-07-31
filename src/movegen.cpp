@@ -20,16 +20,13 @@
 
 #include <cassert>
 
+#include "attacks.h"
 #include "bitboard.h"
 #include "position.h"
 
-#if defined(USE_AVX512ICL)
-    #include <array>
-    #include <algorithm>
-    #include <immintrin.h>
-#endif
-
 namespace Stockfish {
+
+using namespace Attacks;
 
 namespace {
 
@@ -53,7 +50,7 @@ Move* generate_moves(const Position& pos, Move* moveList, Bitboard target) {
             if (Type != QUIETS)
                 b |= attacks_bb<CANNON>(from, pos.pieces()) & pos.pieces(~Us);
 
-            // Generate cannon quite moves.
+            // Generate cannon quiet moves.
             if (Type != CAPTURES)
                 b |= attacks_bb<ROOK>(from, pos.pieces()) & ~pos.pieces();
 

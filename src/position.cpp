@@ -23,16 +23,20 @@
 #include <cassert>
 #include <cctype>
 #include <cstddef>
+#include <initializer_list>
 #include <cstring>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <string_view>
 #include <utility>
 
+#include "attacks.h"
 #include "bitboard.h"
 #include "history.h"
 #include "misc.h"
 #include "movegen.h"
+#include "nnue/nnue_common.h"
 #include "nnue/nnue_architecture.h"
 #include "tt.h"
 #include "uci.h"
@@ -40,6 +44,8 @@
 using std::string;
 
 namespace Stockfish {
+
+using namespace Attacks;
 
 namespace Zobrist {
 
@@ -175,7 +181,7 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
             if (file >= FILE_NB)
                 return PositionSetError("Invalid FEN. Invalid file reached.");
 
-            const size_t idx = PieceToChar.find(token);
+            const usize idx = PieceToChar.find(token);
             if (idx == string::npos)
                 return PositionSetError(std::string("Invalid FEN. Invalid piece: ")
                                         + std::string(1, token));
@@ -479,11 +485,22 @@ bool Position::pseudo_legal(const Move m) const {
 
     // Handle the special cases
     if (type_of(pc) == PAWN)
-        return bool(attacks_bb<PAWN>(from, us) & to);
+    {
+        if (!(attacks_bb<PAWN>(from, us) & to))
+            return false;
+    }
     else if (type_of(pc) == CANNON && !capture(m))
-        return bool(attacks_bb<ROOK>(from, pieces()) & to);
-    else
-        return bool(attacks_bb(type_of(pc), from, pieces()) & to);
+    {
+        if (!(attacks_bb<ROOK>(from, pieces()) & to))
+            return false;
+    }
+    else if (!(attacks_bb(type_of(pc), from, pieces()) & to))
+        return false;
+
+    if (checkers())
+        return MoveList<EVASIONS>(*this).contains(m);
+
+    return true;
 }
 
 
@@ -524,8 +541,7 @@ bool Position::gives_check(Move m) const {
 void Position::do_move(Move                      m,
                        StateInfo&                newSt,
                        bool                      givesCheck,
-                       DirtyPiece&               dp,
-                       DirtyThreats&             dts,
+                       Dirties&                  dirties,
                        const TranspositionTable* tt      = nullptr,
                        const SharedHistories*    history = nullptr) {
 
@@ -558,6 +574,9 @@ void Position::do_move(Move                      m,
             ++st->rule60;
     }
     ++st->pliesFromNull;
+
+    auto& dts = dirties.dirtyThreats;
+    auto& dp  = dirties.dirtyPiece;
 
     Color  us       = sideToMove;
     Color  them     = ~us;
@@ -611,6 +630,8 @@ void Position::do_move(Move                      m,
     k ^= Zobrist::psq[pc][from] ^ Zobrist::psq[pc][to];
     if (tt)
         prefetch(tt->first_entry(adjust_key60(k)));
+    // Update the key with the final value
+    st->key = k;
 
     // If the moving piece is a pawn, update pawn hash key.
     if (type_of(pc) == PAWN)
@@ -663,8 +684,8 @@ void Position::do_move(Move                      m,
       PSQFeatureSet::KingBuckets[king_square(them)][king_square(us)]
                                 [PSQFeatureSet::requires_mid_mirror(*this, them)]
                                   .second};
-    dp.requires_refresh[us] |= dts.requires_refresh[us]     = (mirror_before[0] != mirror_after[0]);
-    dp.requires_refresh[them] |= dts.requires_refresh[them] = (mirror_before[1] != mirror_after[1]);
+    dp.requires_refresh[us] |= (mirror_before[0] != mirror_after[0]);
+    dp.requires_refresh[them] |= (mirror_before[1] != mirror_after[1]);
 
     // Set capture piece
     st->capturedPiece = captured;
@@ -677,9 +698,6 @@ void Position::do_move(Move                      m,
 
     // Update king attacks used for fast check detection
     set_check_info();
-
-    // Update the key with the final value
-    st->key = k;
 
     assert(pos_is_ok());
 
@@ -886,6 +904,21 @@ void Position::update_piece_threats(Piece pc, bool putPiece, Square s, DirtyThre
     }
 }
 
+Key Position::prefetch_key(Move m) const {
+    Square from     = m.from_sq();
+    Square to       = m.to_sq();
+    Piece  pc       = piece_on(from);
+    Piece  captured = piece_on(to);
+    Key    k        = st->key ^ Zobrist::side;
+
+    k ^= Zobrist::psq[captured][to] ^ Zobrist::psq[pc][to] ^ Zobrist::psq[pc][from];
+
+    if (captured)
+        return k;
+
+    return adjust_key60<true>(k);
+}
+
 
 // Used to do a "null move": it flips
 // the side to move without executing any move on the board.
@@ -905,6 +938,8 @@ void Position::do_null_move(StateInfo& newSt) {
     st->key ^= Zobrist::side;
 
     st->pliesFromNull = 0;
+
+    st->capturedPiece = NO_PIECE;
 
     sideToMove = ~sideToMove;
 
@@ -1118,9 +1153,9 @@ bool Position::chase_legal(Move m) const {
 
 
 // Calculates the chase information for a given color.
-uint16_t Position::chased(Color c) {
+u16 Position::chased(Color c) {
 
-    uint16_t chase = 0;
+    u16 chase = 0;
 
     std::swap(c, sideToMove);
 
@@ -1150,8 +1185,8 @@ uint16_t Position::chased(Color c) {
                 if ((attackerType == KNIGHT || attackerType == CANNON)
                     && type_of(piece_on(to)) == ROOK)
                     chase |= (1 << idBoard[to]);
-                if ((attackerType == ADVISOR || attackerType == BISHOP)
-                    && type_of(piece_on(to)) & 1)
+                else if ((attackerType == ADVISOR || attackerType == BISHOP)
+                         && type_of(piece_on(to)) & 1)
                     chase |= (1 << idBoard[to]);
                 // Attacks against potentially unprotected pieces
                 else
@@ -1208,7 +1243,7 @@ Value Position::detect_chases(int d, int ply) {
     Color us = sideToMove, them = ~us;
 
     // Rollback until we reached st - d
-    uint16_t chase[COLOR_NB] = {0xFFFF, 0xFFFF};
+    u16 chase[COLOR_NB] = {0xFFFF, 0xFFFF};
     for (int i = 0; i < d; ++i)
     {
         if (!chase[~sideToMove])
@@ -1220,7 +1255,7 @@ Value Position::detect_chases(int d, int ply) {
         }
         else
         {
-            uint16_t after = chased(~sideToMove);
+            u16 after = chased(~sideToMove);
             undo_move(st->move, st->capturedPiece);
             st = st->previous;
             // Take the exact diff to detect the chase
@@ -1380,7 +1415,7 @@ bool Position::rule_judge(Value& result, int ply) {
 
 // Flips position with the white and black sides reversed. This
 // is only useful for debugging e.g. for finding evaluation symmetry bugs.
-void Position::flip() {
+std::optional<PositionSetError> Position::flip() {
 
     string            f, token;
     std::stringstream ss(fen());
@@ -1409,9 +1444,7 @@ void Position::flip() {
     std::getline(ss, token);  // Half and full moves
     f += token;
 
-    set(f, st);
-
-    assert(pos_is_ok());
+    return set(f, st);
 }
 
 
@@ -1420,21 +1453,16 @@ void Position::flip() {
 // This is meant to be helpful when debugging.
 bool Position::pos_is_ok() const {
 
-    constexpr bool Fast = true;  // Quick (default) or full check?
-
     if ((sideToMove != WHITE && sideToMove != BLACK) || piece_on(king_square(WHITE)) != W_KING
         || piece_on(king_square(BLACK)) != B_KING)
         assert(0 && "pos_is_ok: Default");
 
-    if (Fast)
-        return true;
-
-    if (pieceCount[W_KING] != 1 || pieceCount[B_KING] != 1
+    if (count<KING>(WHITE) != 1 || count<KING>(BLACK) != 1
         || checkers_to(sideToMove, king_square(~sideToMove)))
         assert(0 && "pos_is_ok: Kings");
 
     if ((pieces(WHITE, PAWN) & ~PawnBB[WHITE]) || (pieces(BLACK, PAWN) & ~PawnBB[BLACK])
-        || pieceCount[W_PAWN] > 5 || pieceCount[B_PAWN] > 5)
+        || count<PAWN>(WHITE) > 5 || count<PAWN>(BLACK) > 5)
         assert(0 && "pos_is_ok: Pawns");
 
     if ((pieces(WHITE) & pieces(BLACK)) || (pieces(WHITE) | pieces(BLACK)) != pieces()

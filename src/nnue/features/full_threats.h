@@ -13,12 +13,10 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-//Definition of input features Simplified_Threats of NNUE evaluation function
+//Definition of input features Full_Threats of NNUE evaluation function
 
 #ifndef NNUE_FEATURES_FULL_THREATS_INCLUDED
 #define NNUE_FEATURES_FULL_THREATS_INCLUDED
-
-#include <cstdint>
 
 #include "../../misc.h"
 #include "../../types.h"
@@ -32,11 +30,8 @@ namespace Stockfish::Eval::NNUE::Features {
 
 class FullThreats {
    public:
-    // Feature name
-    static constexpr const char* Name = "Full_Threats(Friend)";
-
     // Hash value embedded in the evaluation file
-    static constexpr std::uint32_t HashValue = 0x8f234cb8u;
+    static constexpr u32 HashValue = 0x2e6b9d04u;
 
     // Number of feature dimensions
     static constexpr IndexType Dimensions = 45547;
@@ -60,10 +55,6 @@ class FullThreats {
                                        IndexList&              added,
                                        const ThreatWeightType* prefetchBase   = nullptr,
                                        IndexType               prefetchStride = 0);
-
-    // Returns whether the change stored in this DirtyPiece means
-    // that a full accumulator refresh is required.
-    static bool requires_refresh(const DiffType& diff, Color perspective);
 };
 
 }  // namespace Stockfish::Eval::NNUE::Features

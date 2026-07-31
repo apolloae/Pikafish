@@ -23,6 +23,7 @@
 #include <array>
 #include <utility>
 
+#include "../../attacks.h"
 #include "../../bitboard.h"
 #include "../../misc.h"
 #include "../../position.h"
@@ -34,7 +35,7 @@ namespace Stockfish::Eval::NNUE::Features {
 
 // Lookup array for indexing threats
 auto ThreatOffsets = []() {
-    MultiArray<uint16_t, PIECE_NB, SQUARE_NB, SQUARE_NB, PIECE_NB> ThreatOffsets{};
+    MultiArray<u16, PIECE_NB, SQUARE_NB, SQUARE_NB, PIECE_NB> ThreatOffsets{};
     // clang-format off
     constexpr bool ValidPairs[PIECE_NB][PIECE_NB] = {
       //    R   A   C   P   N   B   K   _   r   a   c   p   n   b   k
@@ -58,10 +59,10 @@ auto ThreatOffsets = []() {
     // clang-format on
 
     // Initialize threat offsets to be all Dimension
-    for (uint8_t i = 0; i < PIECE_NB; ++i)
-        for (uint8_t j = 0; j < SQUARE_NB; ++j)
-            for (uint8_t k = 0; k < SQUARE_NB; ++k)
-                for (uint8_t l = 0; l < PIECE_NB; ++l)
+    for (u8 i = 0; i < PIECE_NB; ++i)
+        for (u8 j = 0; j < SQUARE_NB; ++j)
+            for (u8 k = 0; k < SQUARE_NB; ++k)
+                for (u8 l = 0; l < PIECE_NB; ++l)
                     ThreatOffsets[i][j][k][l] = FullThreats::Dimensions;
 
     int cumulativeOffset = 0;
@@ -74,12 +75,12 @@ auto ThreatOffsets = []() {
             {
                 Bitboard attacks = Bitboard(0);
                 if (pt == PAWN)
-                    attacks = attacks_bb<PAWN>(from, color_of(attacker));
+                    attacks = Attacks::attacks_bb<PAWN>(from, color_of(attacker));
                 else if (pt == CANNON)
-                    attacks =
-                      Bitboards::sliding_attack<CANNON>(from, unconstrained_attacks_bb<KING>(from));
+                    attacks = Attacks::sliding_attack<CANNON>(
+                      from, Attacks::unconstrained_attacks_bb<KING>(from));
                 else
-                    attacks = PseudoAttacks[pt][from];
+                    attacks = Attacks::PseudoAttacks[pt][from];
 
                 for (Piece attacked : HalfKAv2_hm::AllPieces)
                     if (ValidPairs[attacker][attacked])
@@ -138,8 +139,9 @@ void FullThreats::append_active_indices(Color perspective, const Position& pos, 
         Piece     attacker = pos.piece_on(from);
         PieceType pt       = type_of(attacker);
         Color     c        = color_of(attacker);
-        Bitboard  attacks =
-          (pt == PAWN ? attacks_bb<PAWN>(from, c) : attacks_bb(pt, from, occupied)) & occupied;
+        Bitboard  attacks  = (pt == PAWN ? Attacks::attacks_bb<PAWN>(from, c)
+                                         : Attacks::attacks_bb(pt, from, occupied))
+                           & occupied;
 
         while (attacks)
         {
@@ -176,10 +178,6 @@ void FullThreats::append_changed_indices(Color                   perspective,
               reinterpret_cast<uintptr_t>(prefetchBase) + index * prefetchStride));
         insert.push_back_if_lt(index, Dimensions);
     }
-}
-
-bool FullThreats::requires_refresh(const DiffType& diff, Color perspective) {
-    return diff.requires_refresh[perspective];
 }
 
 }  // namespace Stockfish::Eval::NNUE::Features
