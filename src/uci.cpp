@@ -509,7 +509,11 @@ void UCIEngine::position(std::istringstream& is) {
         while (is >> token && token != "moves")
             fen += token + " ";
     else
-        return;
+        fen = StartFEN;  // No FEN given: default to the standard FEN
+
+    // "position fen" without a FEN string also falls back to the default
+    if (fen.empty())
+        fen = StartFEN;
 
     std::vector<std::string> moves;
 
