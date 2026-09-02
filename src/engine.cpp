@@ -36,6 +36,7 @@
 #include "numa.h"
 #include "perft.h"
 #include "position.h"
+#include "rules.h"
 #include "search.h"
 #include "shm.h"
 #include "types.h"
@@ -56,7 +57,7 @@ constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
 
 Engine::Engine(std::optional<std::filesystem::path> path) :
     binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
-    numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
+    numaContext(NumaConfig::from_system(DefaultNumaPolicy, false)),
     states(new std::deque<StateInfo>(1)),
     threads(),
     networkFile{std::nullopt, ""},
@@ -71,7 +72,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "NumaPolicy", Option("auto", [this](const Option& o) {
+      "NumaPolicy", Option("hardware", [this](const Option& o) {
           if (!set_numa_config_from_option(o))
               return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
           return numa_config_information_as_string() + "\n"
@@ -105,6 +106,64 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add("Move Overhead", Option(10, 0, 5000));
 
     options.add("nodestime", Option(0, 0, 10000));
+
+    options.add(  //
+      "Mate Threat Depth", Option(10, 0, 10, [](const Option& o) {
+          Rules::mateThreatDepth = int(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Repetition Rule",
+      Option(
+        "YitianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var "
+        "AllowChase var NoJudgement",
+        "YitianRule", [this](const Option& o) {
+            Rules::repetitionRule =
+              o == "ChineseRule"  ? Rules::RepetitionRule::CHINESE
+              : o == "SkyRule"    ? Rules::RepetitionRule::SKY
+              : o == "ComputerRule" ? Rules::RepetitionRule::COMPUTER
+              : o == "YitianRule" ? Rules::RepetitionRule::YITIAN
+              : o == "AllowChase" ? Rules::RepetitionRule::ALLOW_CHASE
+              : o == "NoJudgement" ? Rules::RepetitionRule::NO_JUDGEMENT
+                                    : Rules::RepetitionRule::YITIAN;
+
+            // SkyRule fixes rule60MaxPly at 120 and is not adjustable.
+            // AsianRule, YitianRule and other non-sky variants follow the
+            // Rule60MaxPly option, which defaults to 134 with range 90-150.
+            if (Rules::sky_rule())
+                Rules::rule60MaxPly = 120;
+            else
+                Rules::rule60MaxPly = int(options["Rule60MaxPly"]);
+            return std::nullopt;
+        }));
+
+    options.add(  //
+      "Draw Rule",
+      Option(
+        "None var None var DrawAsBlackWin var DrawAsRedWin var DrawRepAsBlackWin var "
+        "DrawRepAsRedWin",
+        "None", [](const Option& o) {
+            Rules::drawRule =
+              o == "DrawAsBlackWin"      ? Rules::DrawRule::DRAW_AS_BLACK_WIN
+              : o == "DrawAsRedWin"      ? Rules::DrawRule::DRAW_AS_RED_WIN
+              : o == "DrawRepAsBlackWin" ? Rules::DrawRule::DRAW_REP_AS_BLACK_WIN
+              : o == "DrawRepAsRedWin"   ? Rules::DrawRule::DRAW_REP_AS_RED_WIN
+                                           : Rules::DrawRule::NONE;
+            return std::nullopt;
+        }));
+
+    options.add(  //
+      "Sixty Move Rule", Option(true, [](const Option& o) {
+          Rules::sixtyMoveRule = int(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Rule60MaxPly", Option(134, 90, 150, [](const Option& o) {
+          Rules::rule60MaxPly = Rules::sky_rule() ? 120 : int(o);
+          return std::nullopt;
+      }));
 
     options.add("UCI_ShowWDL", Option(false));
 
