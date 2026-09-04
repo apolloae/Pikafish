@@ -1439,7 +1439,7 @@ std::optional<PositionSetError> Position::flip() {
     f += token + " ";
 
     std::transform(f.begin(), f.end(), f.begin(),
-                   [](char c) { return char(islower(c) ? toupper(c) : tolower(c)); });
+                   [](unsigned char c) { return char(islower(c) ? toupper(c) : tolower(c)); });
 
     ss >> token;
     f += token;
