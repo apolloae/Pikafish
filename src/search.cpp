@@ -43,6 +43,8 @@
 #include "types.h"
 #include "uci.h"
 #include "ucioption.h"
+#include "xqconfig.h"
+#include "xqoptions.h"
 
 namespace Stockfish {
 
@@ -225,9 +227,11 @@ void Search::Worker::start_searching() {
         main_manager()->tm.advance_nodes_time(threads.nodes_searched()
                                               - limits.inc[rootPos.side_to_move()]);
 
-    Worker* bestThread = this;
+    Worker*       bestThread = this;
+    Search::Skill skill{int(options["Skill Level"]),
+                        options["UCI_LimitStrength"] ? int(options["UCI_Elo"]) : 0};
 
-    if (!limits.depth)
+    if (!limits.depth && !skill.enabled())
         bestThread = threads.get_best_thread()->worker.get();
 
     main_manager()->bestPreviousScore        = bestThread->rootMoves[0].score;
@@ -295,7 +299,12 @@ bool Search::Worker::iterative_deepening() {
             mainThread->iterValue.fill(mainThread->bestPreviousScore);
     }
 
-    usize multiPV = usize(options["MultiPV"]);
+    usize         multiPV = usize(options["MultiPV"]);
+    Search::Skill skill{int(options["Skill Level"]),
+                        options["UCI_LimitStrength"] ? int(options["UCI_Elo"]) : 0};
+
+    if (skill.enabled())
+        multiPV = std::max(multiPV, usize(4));
 
     multiPV = std::min(multiPV, rootMoves.size());
 
@@ -533,6 +542,9 @@ bool Search::Worker::iterative_deepening() {
         if (!mainThread)
             continue;
 
+        if (skill.enabled() && skill.time_to_pick(rootDepth))
+            skill.pick_best(rootMoves, multiPV);
+
         // Use part of the gained time from a previous stable move for the current move
         for (auto&& th : threads)
         {
@@ -595,6 +607,11 @@ bool Search::Worker::iterative_deepening() {
         return false;
 
     mainThread->previousTimeReduction = timeReduction;
+
+    if (skill.enabled())
+        std::swap(rootMoves[0],
+                  *std::find(rootMoves.begin(), rootMoves.end(),
+                             skill.best ? skill.best : skill.pick_best(rootMoves, multiPV)));
 
     return uciPvSent;
 }
@@ -870,7 +887,7 @@ Value Search::Worker::search(
 
             // Partial workaround for the graph history interaction problem.
             // For high rule60 counts don't produce transposition table cutoffs.
-            if (pos.rule60_count() < 116)
+            if (pos.rule60_count() < RuleConfig::rule60MaxPly - 4)
             {
                 if (depth >= 7 && ttData.move && pos.pseudo_legal(ttData.move)
                     && pos.legal(ttData.move) && !is_decisive(ttData.value))
@@ -1859,12 +1876,14 @@ Value value_from_tt(Value v, int ply, int r60c) {
     // Handle win
     if (is_win(v))
         // Downgrade a potentially false mate score
-        return VALUE_MATE - v > 120 - r60c ? VALUE_MATE_IN_MAX_PLY - 1 : v - ply;
+        return VALUE_MATE - v > RuleConfig::rule60MaxPly - r60c ? VALUE_MATE_IN_MAX_PLY - 1
+                                                                : v - ply;
 
     // Handle loss
     if (is_loss(v))
         // Downgrade a potentially false mate score
-        return VALUE_MATE + v > 120 - r60c ? VALUE_MATED_IN_MAX_PLY + 1 : v + ply;
+        return VALUE_MATE + v > RuleConfig::rule60MaxPly - r60c ? VALUE_MATED_IN_MAX_PLY + 1
+                                                                : v + ply;
 
     return v;
 }

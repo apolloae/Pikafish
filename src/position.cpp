@@ -246,7 +246,7 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
     // 3-4. Halfmove clock and fullmove number
     ss >> std::skipws >> st->rule60 >> gamePly;
 
-    if (st->rule60 < 0 || st->rule60 > 119)
+    if (st->rule60 < 0 || st->rule60 > RuleConfig::rule60MaxPly - 1)
         return PositionSetError("Unsupported position. Rule60 counter out of range.");
 
     if (gamePly < 0 || gamePly > 100000)
@@ -1276,6 +1276,9 @@ Value Position::detect_chases(int d, int ply) {
 // Tests whether the position may end the game by rule 60, insufficient material, draw repetition,
 // perpetual check repetition or perpetual chase repetition that allows a player to claim a game result.
 bool Position::rule_judge(Value& result, int ply) {
+
+    if (!RuleConfig::uses_official_rules())
+        return xq_rule_judge(result, ply);
 
     // Restore rule 60 by adding back the checks
     int end = std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)

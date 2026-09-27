@@ -41,6 +41,7 @@
 #include "types.h"
 #include "uci.h"
 #include "ucioption.h"
+#include "xqoptions.h"
 
 namespace Stockfish {
 
@@ -113,6 +114,8 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
           load_network(path_from_utf8(std::string(o)));
           return std::nullopt;
       }));
+
+    add_extended_options(options);
 
     threads.clear();
     threads.ensure_network_replicated();

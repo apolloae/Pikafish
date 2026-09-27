@@ -19,3 +19,7 @@ tsan.supp
 __pycache__/
 tests/syzygy
 tests/bench_tmp.epd
+
+# Local IDE / Visual Studio cache
+.vs/
+*.code-workspace

@@ -36,6 +36,7 @@
 #include "misc.h"
 #include "nnue/features/half_ka_v2_hm.h"
 #include "types.h"
+#include "xqconfig.h"
 
 namespace Stockfish {
 
@@ -67,6 +68,11 @@ struct StateInfo {
     bool       needFullCheck;
     Piece      capturedPiece;
     Move       move;
+
+    // Extended XQ rule state (not copied on do_move; filled while rolling back)
+    u16        skyVictims;
+    u16        skyCheckers;
+    u16        skyChasers;
 };
 
 
@@ -195,6 +201,14 @@ class Position {
     void                  undo_move(Move m, Piece captured, int id = 0);
     Value                 detect_chases(int d, int ply = 0);
     bool                  chase_legal(Move m) const;
+    bool                  chase_legal(Move m, Bitboard b) const;
+    bool                  xq_rule_judge(Value& result, int ply);
+    Value                 xq_detect_chases(int d, int ply);
+    ChaseMap              xq_chased(Color c);
+    bool                  has_mate_threat(Depth d = -1);
+    void                  set_sky_info(int d);
+    Value                 detect_sky_cycle(int d, int ply);
+    SkyChaseMap           sky_chased(Color c);
     template<bool AfterMove = false>
     Key adjust_key60(Key k) const;
 
