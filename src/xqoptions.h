@@ -19,6 +19,11 @@ class OptionsMap;
 
 void add_extended_options(OptionsMap& options);
 
+// Display-only conversion for UCI "cp" scores, selected by ScoreType.
+// Search values and WDL are unchanged.
+enum class ScoreTypeMode { ELO, PAWN_VALUE_NORMALIZED, RAW };
+inline ScoreTypeMode scoreTypeMode = ScoreTypeMode::ELO;
+
 namespace Search {
 
 // Official Stockfish strength limit. Skill 0..19 covers CCRL Blitz Elo

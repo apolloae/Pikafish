@@ -12,8 +12,9 @@
 
 namespace Stockfish {
 
-// UCI-driven Xiangqi rule knobs. Defaults match official Pikafish
-// (ComputerRule, 120-ply sixty-move, no draw override).
+// UCI-driven Xiangqi rule knobs. Default repetition rule is AsianRule
+// (2-fold), with rule120 and the sixty-move rule on. ComputerRule restores
+// official Pikafish 3-fold adjudication.
 namespace RuleConfig {
 
 enum class RepetitionRule {

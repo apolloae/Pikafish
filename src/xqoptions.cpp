@@ -12,7 +12,7 @@
 namespace Stockfish {
 
 namespace RuleConfig {
-RepetitionRule repetitionRule  = RepetitionRule::COMPUTER;
+RepetitionRule repetitionRule  = RepetitionRule::ASIAN;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 10;
 bool           sixtyMoveRule   = true;
@@ -36,9 +36,9 @@ void add_extended_options(OptionsMap& options) {
 
     options.add(  //
       "Repetition Rule",
-      Option("ComputerRule var AsianRule var ChineseRule var SkyRule var ComputerRule "
+      Option("AsianRule var AsianRule var ChineseRule var SkyRule var ComputerRule "
              "var YitianRule var AllowChase var NoJudgement",
-             "ComputerRule", [](const Option& o) {
+             "AsianRule", [](const Option& o) {
                  using RR = RuleConfig::RepetitionRule;
 
                  RuleConfig::repetitionRule =
@@ -92,6 +92,15 @@ void add_extended_options(OptionsMap& options) {
             (RuleConfig::repetitionRule == RR::ASIAN || RuleConfig::repetitionRule == RR::SKY)
               ? 120
               : int(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "ScoreType",
+      Option("Elo var Elo var PawnValueNormalized var Raw", "Elo", [](const Option& o) {
+          scoreTypeMode = o == "Elo"  ? ScoreTypeMode::ELO
+                        : o == "Raw" ? ScoreTypeMode::RAW
+                                     : ScoreTypeMode::PAWN_VALUE_NORMALIZED;
           return std::nullopt;
       }));
 }
