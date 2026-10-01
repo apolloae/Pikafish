@@ -3,9 +3,9 @@
   [![Pikafish][pikafish-logo]][website-link]
 
 
-  <h3>Pikafish</h3>
+  <h3>Pikafish-softwareshare</h3>
 
-  A free and strong UCI xiangqi engine.
+  A Pikafish fork with extra UCI options.
   <br>
   <strong>[Explore Pikafish docs »][wiki-link]</strong>
   <br>
@@ -33,6 +33,10 @@
 
 ## Overview
 
+This repository is a [Pikafish][website-link] fork maintained by
+[softwareshare9999](https://softwareshare9999.pages.dev). It adds extra UCI
+options. The UCI engine name is `Pikafish-softwareshare`.
+
 [Pikafish][website-link] is a **free and strong UCI xiangqi engine** derived from
 [Stockfish][stockfish-link] that analyzes xiangqi positions and computes the optimal moves.
 
@@ -53,7 +57,8 @@ This distribution of Pikafish consists of the following files:
   * [Copying.txt][license-link], a text file containing the GNU General Public
     License version 3.
 
-  * [AUTHORS][authors-link], a text file with the list of authors for the official Pikafish project.
+  * [AUTHORS](./AUTHORS), a text file with the official Pikafish authors and this
+    fork's maintainer.
 
   * [src][src-link], a subdirectory containing the full source code, including a
     Makefile that can be used to compile Pikafish on Unix-like systems.
@@ -130,7 +135,6 @@ also be made available under GPL v3.
 Pikafish uses neural networks trained on [data provided by the Pika Xiangqi Zero
 project][px0-data-link], which is made available under the [Open Database License][odbl-link] (ODbL).
 
-[authors-link]:			https://github.com/official-pikafish/Pikafish/blob/master/AUTHORS
 [build-badge]:			https://img.shields.io/github/actions/workflow/status/official-pikafish/Pikafish/pikafish.yml?branch=master&style=for-the-badge&label=pikafish&logo=github
 [build-link]:				https://github.com/official-pikafish/Pikafish/actions/workflows/pikafish.yml
 [commits-badge]:		https://img.shields.io/github/commits-since/official-pikafish/Pikafish/latest?style=for-the-badge

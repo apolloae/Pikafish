@@ -38,7 +38,6 @@ __attribute__((used))  // keep main alive
 
 int main(int argc, char* argv[]) {
     std::cout << engine_info() << std::endl;
-    std::cout << "id updater: softwareshare9999" << std::endl;
 
     Attacks::init();
     Position::init();
