@@ -129,20 +129,20 @@ class Logger {
 }  // namespace
 
 
-// Returns the full name of the current Pikafish-softwareshare version.
+// Returns the full name of the current Pikafish version.
 //
 // For local dev compiles we try to append the commit SHA and
 // commit date from git. If that fails only the local compilation
 // date is set and "nogit" is specified:
-//      Pikafish-softwareshare dev-YYYYMMDD-SHA
+//      Pikafish dev-YYYYMMDD-SHA
 //      or
-//      Pikafish-softwareshare dev-YYYYMMDD-nogit
+//      Pikafish dev-YYYYMMDD-nogit
 //
 // For releases (non-dev builds) we only include the version number:
-//      Pikafish-softwareshare version
+//      Pikafish version
 std::string engine_version_info() {
     std::stringstream ss;
-    ss << "Pikafish-softwareshare " << version << std::setfill('0');
+    ss << "Pikafish " << version << std::setfill('0');
 
     if constexpr (version == "dev")
     {
@@ -178,8 +178,7 @@ std::string engine_version_info() {
 
 std::string engine_info(bool to_uci) {
     return engine_version_info() + (to_uci ? "\nid author " : " by ")
-         + "the Pikafish developers (see AUTHORS file), extra UCI options by "
-           "softwareshare9999 (https://softwareshare9999.pages.dev)";
+         + "the Pikafish developers (see AUTHORS file)";
 }
 
 
