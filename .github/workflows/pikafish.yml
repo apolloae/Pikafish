@@ -3,7 +3,7 @@ name: Pikafish
 on:
   push:
     branches:
-      - sws9999
+      - SWS9999
 
 jobs:
   Pikafish-x86-64:
