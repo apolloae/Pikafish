@@ -3,7 +3,7 @@ name: Pikafish
 on:
   push:
     branches:
-      - master
+      - tide9999
 
 jobs:
   Pikafish-x86-64:
