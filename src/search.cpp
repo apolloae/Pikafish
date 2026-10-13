@@ -368,6 +368,9 @@ bool Search::Worker::iterative_deepening() {
             alpha     = std::max(avg - delta, -VALUE_INFINITE);
             beta      = std::min(avg + delta, VALUE_INFINITE);
 
+            // Do not tune these values. They are not intended for playing strength.
+            seekMate = std::abs(rootMoves[pvIdx].score) >= 750 + 220000 / (rootDepth * rootDepth);
+
             // Adjust optimism based on root move's averageScore
             optimism[us]  = 92 * avg / (std::abs(avg) + 96);
             optimism[~us] = -optimism[us];
@@ -716,11 +719,6 @@ Value Search::Worker::search(
     constexpr bool rootNode = nodeType == Root;
     const bool     allNode  = !(PvNode || cutNode);
 
-    assert(rootDepth);
-    // Do not tune these values. They are not intended for playing strength.
-    const bool seekMate =
-      std::abs(rootMoves[pvIdx].score) >= 750 + 220000 / (rootDepth * rootDepth);
-
     // Dive into quiescence search when the depth reaches zero
     if (depth <= 0)
         return qsearch<PvNode ? PV : NonPV>(pos, ss, alpha, beta);
@@ -898,8 +896,8 @@ Value Search::Worker::search(
             // For high rule60 counts don't produce transposition table cutoffs.
             if (pos.rule60_count() < RuleConfig::rule60MaxPly - 4)
             {
-                if (depth >= 7 && ttData.move && pos.pseudo_legal(ttData.move)
-                    && pos.legal(ttData.move) && !is_decisive(ttData.value))
+                if (depth >= 7 && ttData.move && pos.legal(ttData.move)
+                    && !is_decisive(ttData.value))
                 {
                     pos.do_move(ttData.move, st);
                     Key nextPosKey                             = pos.key();
@@ -923,6 +921,8 @@ Value Search::Worker::search(
             assert(!(ttData.bound & (ttData.value >= beta ? BOUND_LOWER : BOUND_UPPER)));
 
             // If such a mismatch is the only reason cutoff failed, the TT entry is now useless
+            // (*Scaler) This is very close to secondary aging, a known antiscaler. The depth
+            // and window conditions seem to be key to decent scaling.
             ttWriter.penalize(1);
         }
     }
@@ -968,7 +968,8 @@ Value Search::Worker::search(
         assert((ss - 1)->currentMove != Move::null());
 
         // Null move dynamic reduction based on depth
-        Depth R = 8 + depth / 3 + std::max((ss->staticEval - beta) / 282, 0);
+        Depth R = 8 + depth / 3 + std::max((ss->staticEval - beta) / 256, 0);
+        R -= seekMate * R / 2;
         do_null_move(pos, st, ss);
 
         Value nullValue = -search<NonPV>(pos, ss + 1, -beta, -beta + 1, depth - R, false);
@@ -1026,7 +1027,7 @@ Value Search::Worker::search(
         {
             assert(move.is_ok());
 
-            if (move == excludedMove || !pos.legal(move))
+            if (move == excludedMove)
                 continue;
 
             capture = pos.capture(move);
@@ -1060,7 +1061,7 @@ moves_loop:  // When in check, search starts here
     // Step 13. A small ProbCut idea
     probCutBeta = beta + 470;
     if ((ttData.bound & BOUND_LOWER) && ttData.depth >= depth - 4 && ttData.value >= probCutBeta
-        && !is_decisive(beta) && is_valid(ttData.value) && !is_decisive(ttData.value))
+        && !is_decisive(beta) && is_valid(ttData.value) && !is_decisive(ttData.value) && !seekMate)
         return probCutBeta;
 
     const PieceToHistory* contHist[] = {
@@ -1075,17 +1076,13 @@ moves_loop:  // When in check, search starts here
 
     int moveCount = 0;
 
-    // Step 14. Loop through all pseudo-legal moves until no moves remain
+    // Step 14. Loop through all legal moves until no moves remain
     // or a beta cutoff occurs.
     while ((move = mp.next_move()) != Move::none())
     {
         assert(move.is_ok());
 
         if (move == excludedMove)
-            continue;
-
-        // Check for legality
-        if (!pos.legal(move))
             continue;
 
         // At root obey the "searchmoves" option and skip moves not listed in Root Move List.
@@ -1313,6 +1310,10 @@ moves_loop:  // When in check, search starts here
         if (allNode)
             r += r * 254 / (256 * depth + 255);
 
+        // When seeking a mate, reduce non-checking moves more and checking moves less
+        if (seekMate && r > 0)
+            r += (givesCheck ? -r : r) / 4;
+
         // Apply the computed LMR
         if (depth >= 2 && moveCount > 1)
         {
@@ -1508,7 +1509,7 @@ moves_loop:  // When in check, search starts here
 
     // Step 23. Check for mate and stalemate, otherwise update bestmove/countermove stats
 
-    assert(moveCount || !ss->inCheck || excludedMove || !MoveList<LEGAL>(pos).size());
+    assert(moveCount || !ss->inCheck || excludedMove || !MoveList<ALL>(pos).size());
 
     // Adjust best value for fail high cases
     if (bestValue >= beta && !is_decisive(bestValue) && !is_decisive(alpha))
@@ -1738,14 +1739,11 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     MovePicker mp(pos, ttData.move, DEPTH_QS, &mainHistory, &lowPlyHistory, &captureHistory,
                   contHist, &sharedHistory, ss->ply);
 
-    // Step 5. Loop through all pseudo-legal moves until no moves remain
+    // Step 5. Loop through all legal moves until no moves remain
     // or a beta cutoff occurs.
     while ((move = mp.next_move()) != Move::none())
     {
         assert(move.is_ok());
-
-        if (!pos.legal(move))
-            continue;
 
         givesCheck = pos.gives_check(move);
         capture    = pos.capture(move);
@@ -1820,14 +1818,9 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     // Step 9. Check for mate and stalemate
     // All legal moves have been searched. A special case: if no legal
     // moves were found, it is checkmate.
-    if (!moveCount && (ss->inCheck || [&] {
-            for (const auto& m : MoveList<QUIETS>(pos))
-                if (pos.legal(m))
-                    return false;
-            return true;
-        }()))
+    if (!moveCount && (ss->inCheck || !MoveList<QUIETS>(pos).size()))
     {
-        assert(!MoveList<LEGAL>(pos).size());
+        assert(!MoveList<ALL>(pos).size());
         return mated_in(ss->ply);  // Plies to mate from the root
     }
 
@@ -2114,7 +2107,7 @@ bool RootMove::extract_ponder_from_tt(const TranspositionTable& tt, Position& po
     if (!pos.rule_judge(_, 1))
     {
         auto [ttHit, ttData, ttWriter] = tt.probe(pos.key());
-        if (ttHit && MoveList<LEGAL>(pos).contains(ttData.move))
+        if (ttHit && ttData.move && pos.legal(ttData.move))
             pv.push_back(ttData.move);
     }
 
