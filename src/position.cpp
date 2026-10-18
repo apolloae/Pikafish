@@ -267,7 +267,8 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
 }
 
 
-// Sets pinners, where stm can give check and invalidates the threat cache.
+// Sets pinners and where stm can give check. Squares threatened by ~stm are
+// computed lazily by compute_threats().
 void Position::set_extra_bitboards() const {
 
     update_blockers<WHITE>();
@@ -275,17 +276,13 @@ void Position::set_extra_bitboards() const {
 
     Square ksq = king_square(~sideToMove);
 
-    // We have to take special cares about the hollow cannons and checks
-    st->needFullCheck =
-      checkers() || (attacks_bb(ROOK, king_square(sideToMove)) & pieces(~sideToMove, CANNON));
-
     st->checkSquares[PAWN]   = attacks_bb(PAWN_TO, ksq, sideToMove);
     st->checkSquares[KNIGHT] = attacks_bb(KNIGHT_TO, ksq, pieces());
     st->checkSquares[CANNON] = attacks_bb(CANNON, ksq, pieces());
     st->checkSquares[ROOK]   = attacks_bb(ROOK, ksq, pieces());
     st->checkSquares[KING] = st->checkSquares[ADVISOR] = st->checkSquares[BISHOP] = 0;
 
-    st->threatsComputed = false;
+    st->threats[ALL_PIECES] = 0;
 
     Bitboard hollowCannons = st->checkSquares[ROOK] & pieces(sideToMove, CANNON);
     if (hollowCannons)
@@ -299,8 +296,7 @@ void Position::set_extra_bitboards() const {
 }
 
 
-// Computes the threat cache only when move generation or scoring needs it.
-void Position::set_threats() const {
+void Position::compute_threats() const {
 
     Bitboard occ            = pieces() ^ king_square(sideToMove);
     st->threats[ALL_PIECES] = st->threats[PAWN]     = xattacks_by(PAWN, ~sideToMove, occ);
@@ -310,7 +306,6 @@ void Position::set_threats() const {
     st->threats[ALL_PIECES] |= st->threats[CANNON]  = xattacks_by(CANNON, ~sideToMove, occ);
     st->threats[ALL_PIECES] |= st->threats[ROOK]    = xattacks_by(ROOK, ~sideToMove, occ);
     st->threats[ALL_PIECES] |= st->threats[KING]    = xattacks_by(KING, ~sideToMove, occ);
-    st->threatsComputed                             = true;
 }
 
 
@@ -493,15 +488,15 @@ bool Position::legal(Move m) const {
     if (type_of(piece_on(from)) == KING)
         return !(to & threats_by(ALL_PIECES));
 
-    // If we don't need full check. A non-king move is always legal when either:
-    // 1. Not moving a pinned piece.
-    // 2. Moving a pinned non-cannon piece and aligned with king.
-    // 3. Moving a pinned cannon and aligned with king but it's not a capture move.
-    if (!st->needFullCheck
-        && (!(blockers_for_king(us) & from)
-            || (((type_of(piece_on(from)) != CANNON) || !capture(m))
-                && aligned(from, to, king_square(us)))))
-        return true;
+    // Moving an unpinned piece cannot expose an attack.
+    if (!checkers() && !(blockers_for_king(us) & from))
+    {
+        // Only a quiet move onto a king ray can create a new cannon screen.
+        if (capture(m) || !(attacks_bb(ROOK, king_square(us)) & to))
+            return true;
+
+        return !(attacks_bb(CANNON, king_square(us), occupied) & pieces(~us, CANNON));
+    }
 
     // A non-king move is legal if the king is not under attack after the move.
     return !(checkers_to(~us, king_square(us), occupied) & ~square_bb(to));
