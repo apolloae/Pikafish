@@ -3,7 +3,7 @@ name: Pikafish
 on:
   push:
     branches:
-      - 9999
+      - SES9999
 
 jobs:
   Pikafish-x86-64:
